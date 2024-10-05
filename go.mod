@@ -3,8 +3,10 @@ module github.com/quic-go/connect-ip-go
 go 1.22
 
 require (
+	github.com/dunglas/httpsfv v1.0.2
 	github.com/quic-go/quic-go v0.47.1-0.20241002141227-b2233591adc7
 	github.com/stretchr/testify v1.9.0
+	github.com/yosida95/uritemplate/v3 v3.0.2
 )
 
 require (
