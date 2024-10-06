@@ -1,4 +1,4 @@
-package masque
+package connectip
 
 import (
 	"bytes"
