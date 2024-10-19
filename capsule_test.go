@@ -227,6 +227,14 @@ func TestParseRouteAdvertisementCapsule(t *testing.T) {
 		},
 		capsule.IPAddressRanges,
 	)
+	require.Equal(t,
+		rangeToPrefixes(netip.MustParseAddr("1.1.1.1"), netip.MustParseAddr("1.2.3.4")),
+		capsule.IPAddressRanges[0].Prefixes(),
+	)
+	require.Equal(t,
+		rangeToPrefixes(netip.MustParseAddr("2001:db8::1"), netip.MustParseAddr("2001:db8::100")),
+		capsule.IPAddressRanges[1].Prefixes(),
+	)
 	require.Zero(t, r.Len())
 }
 

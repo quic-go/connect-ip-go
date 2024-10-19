@@ -176,6 +176,11 @@ type IPAddressRange struct {
 
 func (r IPAddressRange) len() int { return 1 + r.StartIP.BitLen()/8 + r.EndIP.BitLen()/8 + 1 }
 
+// Prefixes returns the prefixes that this IP address range covers.
+// Note that depending on the start and end addresses,
+// this conversion can result in a large number of prefixes.
+func (r IPAddressRange) Prefixes() []netip.Prefix { return rangeToPrefixes(r.StartIP, r.EndIP) }
+
 func parseRouteAdvertisementCapsule(r io.Reader) (*routeAdvertisementCapsule, error) {
 	var ranges []IPAddressRange
 	for {
