@@ -65,8 +65,7 @@ func TestIPRanges(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(fmt.Sprintf("%s-%s", test.start, test.end), func(t *testing.T) {
-			prefixes, err := RangeToPrefixes(test.start, test.end)
-			require.NoError(t, err)
+			prefixes := rangeToPrefixes(test.start, test.end)
 			require.Equal(t, test.want, prefixes)
 		})
 	}

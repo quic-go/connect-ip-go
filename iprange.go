@@ -1,34 +1,26 @@
 package connectip
 
-import (
-	"fmt"
-	"net/netip"
-)
+import "net/netip"
 
-// RangeToPrefixes converts an IP range defined by start and end addresses
-// into a slice of CIDR prefixes that exactly cover the range
-func RangeToPrefixes(start, end netip.Addr) ([]netip.Prefix, error) {
-	if start.Is4() != end.Is4() {
-		return nil, fmt.Errorf("start and end must be same IP version")
-	}
-	if start.Compare(end) > 0 {
-		return nil, fmt.Errorf("start IP must be <= end IP")
-	}
-
+// rangeToPrefixes converts an IP range defined by start and end addresses
+// into a slice of CIDR prefixes that exactly cover the range.
+// It assumes that the start and end addresses are of the same IP version,
+// and that the start address is less than or equal to the end address.
+func rangeToPrefixes(start, end netip.Addr) []netip.Prefix {
 	var prefixes []netip.Prefix
 	for current := start; current.Compare(end) <= 0; {
-		// Find the largest prefix that fits within our remaining range
+		// find the largest prefix that fits within our remaining range
 		prefix := findLargestPrefix(current, end)
 		prefixes = append(prefixes, prefix)
 
-		// Move to the next IP address after this prefix
+		// move to the next IP address after this prefix
 		lastIP := lastIPInPrefix(prefix)
 		if lastIP.Compare(end) >= 0 {
 			break
 		}
 		current = lastIP.Next()
 	}
-	return prefixes, nil
+	return prefixes
 }
 
 // findLargestPrefix finds the largest prefix starting at 'start' that doesn't exceed 'end'
