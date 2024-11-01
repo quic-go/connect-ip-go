@@ -1,0 +1,63 @@
+services:
+  proxy:
+    build: proxy
+    container_name: proxy
+    hostname: proxy
+    tty: true
+    environment:
+      - BIND_PROXY_TO=194.166.0.2:443 # address to run the QUIC server on
+      - ASSIGN_ADDR=194.166.0.10 # address to assign to the client
+      - ROUTE=194.166.100.0/24 # route advertised to the client (into the server's subnet)
+      - QUIC_GO_DISABLE_RECEIVE_BUFFER_WARNING=true
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    expose:
+      - "443/udp"
+    networks:
+      clientnet:
+        ipv4_address: 194.166.0.2
+      servernet:
+        ipv4_address: 194.166.100.2
+  client:
+    build: client
+    container_name: client
+    hostname: client
+    environment:
+      - QUIC_GO_DISABLE_RECEIVE_BUFFER_WARNING=true
+      - PROXY_ADDR=194.166.0.2:443
+    networks:
+      clientnet:
+        ipv4_address: 194.166.0.3
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+  server:
+    build: server
+    container_name: server
+    hostname: server
+    environment:
+      - GATEWAY=194.166.100.2
+    networks:
+      servernet:
+        ipv4_address: 194.166.100.3
+    cap_add:
+      - NET_ADMIN
+
+networks:
+  clientnet:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.enable_ip_masquerade: 'false'
+    ipam:
+      config:
+        - subnet: 194.166.0.0/24
+  servernet:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.enable_ip_masquerade: 'false'
+    ipam:
+      config:
+        - subnet: 194.166.100.0/24

@@ -3,13 +3,17 @@ on: [push, pull_request]
 jobs:
   check:
     runs-on: ubuntu-latest
-    name: Lint
+    strategy:
+      matrix:
+        module: [".", "./integration"]
+    name: Lint (${{ matrix.module }})
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: "1.23.x"
       - name: Check for //go:build ignore in .go files
+        working-directory: ${{ matrix.module }}
         run: |
           IGNORED_FILES=$(grep -rl '//go:build ignore' . --include='*.go') || true
           if [ -n "$IGNORED_FILES" ]; then
@@ -18,6 +22,7 @@ jobs:
           fi
       - name: Check that go.mod is tidied
         if: success() || failure() # run this step even if the previous one failed
+        working-directory: ${{ matrix.module }}
         run: |
           cp go.mod go.mod.orig
           cp go.sum go.sum.orig
@@ -26,6 +31,7 @@ jobs:
           diff go.sum go.sum.orig
       - name: gofmt
         if: success() || failure() # run this step even if the previous one failed
+        working-directory: ${{ matrix.module }}
         run: |
           out=$(gofmt -s -l .)
           if [[ -n "$out" ]]; then
@@ -34,12 +40,14 @@ jobs:
           fi
       - name: go vet
         if: success() || failure() # run this step even if the previous one failed
+        working-directory: ${{ matrix.module }}
         run: go vet ./...
       - name: Install staticcheck
         if: success() || failure() # run this step even if the previous one failed
         run: go install honnef.co/go/tools/cmd/staticcheck@v0.5.0
       - name: staticcheck
         if: success() || failure() # run this step even if the previous one failed
+        working-directory: ${{ matrix.module }}
         run: |
           set -o pipefail
           staticcheck ./... | sed -e 's@\(.*\)\.go@./\1.go@g'
