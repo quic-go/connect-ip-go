@@ -312,7 +312,7 @@ func (c *Conn) composeDatagram(b []byte) ([]byte, error) {
 		}
 		b[8]-- // decrement TTL
 		// recalculate the checksum
-		binary.BigEndian.PutUint16(b[10:12], calculateIPv4Checksum(b))
+		binary.BigEndian.PutUint16(b[10:12], calculateIPv4Checksum(([ipv4.HeaderLen]byte)(b[:ipv4.HeaderLen])))
 	case 6:
 		if len(b) < ipv6.HeaderLen {
 			return nil, fmt.Errorf("connect-ip: IPv6 packet too short")

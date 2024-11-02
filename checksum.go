@@ -6,11 +6,7 @@ import (
 	"golang.org/x/net/ipv4"
 )
 
-func calculateIPv4Checksum(header []byte) uint16 {
-	if len(header) < ipv4.HeaderLen {
-		return 0
-	}
-
+func calculateIPv4Checksum(header [ipv4.HeaderLen]byte) uint16 {
 	// add every 16-bit word in the header, skipping the checksum field (bytes 10 and 11)
 	var sum uint32
 	for i := 0; i < len(header); i += 2 {

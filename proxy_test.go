@@ -181,7 +181,7 @@ func TestTTLs(t *testing.T) {
 
 		receivedHdr, err := ipv4.ParseHeader(receivedPacket)
 		require.NoError(t, err)
-		require.Equal(t, uint16(receivedHdr.Checksum), calculateIPv4Checksum(receivedPacket))
+		require.Equal(t, uint16(receivedHdr.Checksum), calculateIPv4Checksum(([ipv4.HeaderLen]byte)(receivedPacket[:ipv4.HeaderLen])))
 		// check that the TTL has been decremented
 		require.Equal(t, 41, receivedHdr.TTL)
 	})
