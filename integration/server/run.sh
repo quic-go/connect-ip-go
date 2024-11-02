@@ -2,6 +2,8 @@
 
 set -e
 
+ethtool -K eth0 tx off
+
 ip route change default via $GATEWAY dev eth0
 
 # delete all routes except default
