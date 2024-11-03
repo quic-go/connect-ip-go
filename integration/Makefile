@@ -1,9 +1,6 @@
-.PHONY: all client server proxy keygen docker-compose
+.PHONY: all client server proxy keygen pingtest
 
-all: test keygen proxy server client docker-compose cleanup
-
-test:
-	go test -v ./...
+build: keygen proxy server client
 
 keygen:
 	openssl genpkey -algorithm Ed25519 -out proxy/key.pem
@@ -24,5 +21,6 @@ cleanup:
 	rm proxy/proxy || true
 	rm proxy/key.pem proxy/cert.pem || true
 
-docker-compose:
+pingtest: build
 	TESTCASE=ping docker compose up --build --exit-code-from client
+	$(MAKE) cleanup

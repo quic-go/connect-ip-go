@@ -1,0 +1,21 @@
+on: [push, pull_request]
+
+jobs:
+  unit:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ "ubuntu" ]
+        go: [ "1.22.x", "1.23.x" ]
+    runs-on: ${{ fromJSON(vars[format('INTEGRATION_RUNNER_{0}', matrix.os)] || format('"{0}-latest"', matrix.os)) }}
+    name: Integration tests (${{ matrix.os}}, Go ${{ matrix.go }})
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+      - run: go version
+      - name: Run unit tests
+        run: cd integration && go test ./...
+      - name: Run ping test
+        run: cd integration && make pingtest
