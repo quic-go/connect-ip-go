@@ -3,7 +3,7 @@ services:
     build: proxy
     container_name: proxy
     hostname: proxy
-    tty: true
+    init: true
     environment:
       - BIND_PROXY_TO=194.166.0.2:443 # address to run the QUIC server on
       - ASSIGN_ADDR=194.166.0.10 # address to assign to the client
@@ -40,6 +40,7 @@ services:
     build: server
     container_name: server
     hostname: server
+    init: true
     environment:
       - GATEWAY=194.166.100.2
     networks:
