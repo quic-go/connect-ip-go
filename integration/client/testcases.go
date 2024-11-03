@@ -2,7 +2,9 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"net/netip"
 	"os/exec"
 	"strings"
@@ -50,4 +52,24 @@ func ping(dst netip.Addr, interval time.Duration, count int) (transmitted, recei
 		}
 	}
 	return
+}
+
+func runHTTPTest(url string) error {
+	resp, err := http.Get(url)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("expected status code %d, got %d", http.StatusOK, resp.StatusCode)
+	}
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	log.Printf("HTTP test: got body %q", string(data))
+	if string(data) != "Hello, World!\n" {
+		return fmt.Errorf("expected body %q, got %q", "Hello, World!\n", string(data))
+	}
+	return nil
 }

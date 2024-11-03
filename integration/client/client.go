@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"os"
 	"time"
 
@@ -21,7 +22,14 @@ import (
 
 func main() {
 	proxyAddr := netip.MustParseAddrPort(os.Getenv("PROXY_ADDR"))
-	serverAddr := netip.MustParseAddr(os.Getenv("SERVER_ADDR"))
+	serverURL, err := url.Parse(os.Getenv("SERVER_ADDR"))
+	if err != nil {
+		log.Fatalf("failed to parse server URL: %v", err)
+	}
+	serverAddr, err := netip.ParseAddrPort(serverURL.Host)
+	if err != nil {
+		log.Fatalf("failed to parse server host: %v", err)
+	}
 	dev, ipconn, err := establishConn(proxyAddr)
 	if err != nil {
 		log.Fatalf("failed to establish connection: %v", err)
@@ -30,8 +38,12 @@ func main() {
 
 	switch os.Getenv("TESTCASE") {
 	case "ping":
-		if err := runPingTest(serverAddr); err != nil {
+		if err := runPingTest(serverAddr.Addr()); err != nil {
 			log.Fatalf("ping test failed: %v", err)
+		}
+	case "http":
+		if err := runHTTPTest(serverURL.String()); err != nil {
+			log.Fatalf("HTTP test failed: %v", err)
 		}
 	default:
 		log.Fatalf("unknown testcase: %s", os.Getenv("TESTCASE"))

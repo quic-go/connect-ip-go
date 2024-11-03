@@ -1,4 +1,4 @@
-.PHONY: all client server proxy keygen pingtest
+.PHONY: all client server proxy keygen pingtest httptest
 
 build: keygen proxy server client
 
@@ -23,4 +23,8 @@ cleanup:
 
 pingtest: build
 	TESTCASE=ping docker compose up --build --exit-code-from client
+	$(MAKE) cleanup
+
+httptest: build
+	TESTCASE=http docker compose up --build --exit-code-from client
 	$(MAKE) cleanup

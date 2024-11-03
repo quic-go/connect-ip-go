@@ -19,3 +19,5 @@ jobs:
         run: cd integration && go test ./...
       - name: Run ping test
         run: cd integration && make pingtest
+      - name: Run HTTP test
+        run: cd integration && make httptest
