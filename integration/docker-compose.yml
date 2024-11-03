@@ -25,6 +25,7 @@ services:
     container_name: client
     hostname: client
     environment:
+      - TESTCASE=$TESTCASE
       - QUIC_GO_DISABLE_RECEIVE_BUFFER_WARNING=true
       - PROXY_ADDR=194.166.0.2:443
       - SERVER_ADDR=194.166.100.3

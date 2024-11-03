@@ -28,8 +28,13 @@ func main() {
 	}
 	go proxy(ipconn, dev)
 
-	if err := runPingTest(serverAddr); err != nil {
-		log.Fatalf("ping test failed: %v", err)
+	switch os.Getenv("TESTCASE") {
+	case "ping":
+		if err := runPingTest(serverAddr); err != nil {
+			log.Fatalf("ping test failed: %v", err)
+		}
+	default:
+		log.Fatalf("unknown testcase: %s", os.Getenv("TESTCASE"))
 	}
 }
 

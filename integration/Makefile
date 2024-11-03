@@ -25,4 +25,4 @@ cleanup:
 	rm proxy/key.pem proxy/cert.pem || true
 
 docker-compose:
-	SCENARIO=ping docker compose up --build --exit-code-from client
+	TESTCASE=ping docker compose up --build --exit-code-from client
