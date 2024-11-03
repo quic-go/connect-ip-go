@@ -17,26 +17,30 @@ import (
 	"github.com/songgao/water"
 	"github.com/vishvananda/netlink"
 	"github.com/yosida95/uritemplate/v3"
-	"golang.org/x/sync/errgroup"
 )
 
 func main() {
 	proxyAddr := netip.MustParseAddrPort(os.Getenv("PROXY_ADDR"))
-	if err := run(proxyAddr); err != nil {
-		log.Fatalf("failed to run: %v", err)
+	serverAddr := netip.MustParseAddr(os.Getenv("SERVER_ADDR"))
+	dev, ipconn, err := establishConn(proxyAddr)
+	if err != nil {
+		log.Fatalf("failed to establish connection: %v", err)
 	}
-	time.Sleep(time.Hour * 100)
+	go proxy(ipconn, dev)
+
+	if err := runPingTest(serverAddr); err != nil {
+		log.Fatalf("ping test failed: %v", err)
+	}
 }
 
-func run(proxyAddr netip.AddrPort) error {
+func establishConn(proxyAddr netip.AddrPort) (*water.Interface, *connectip.Conn, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	udpConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(0, 0, 0, 0)})
 	if err != nil {
-		return fmt.Errorf("failed to listen on UDP: %w", err)
+		return nil, nil, fmt.Errorf("failed to listen on UDP: %w", err)
 	}
-	defer udpConn.Close()
 
 	conn, err := quic.Dial(
 		ctx,
@@ -50,9 +54,8 @@ func run(proxyAddr netip.AddrPort) error {
 		&quic.Config{EnableDatagrams: true, KeepAlivePeriod: 10 * time.Second},
 	)
 	if err != nil {
-		return fmt.Errorf("failed to dial QUIC connection: %w", err)
+		return nil, nil, fmt.Errorf("failed to dial QUIC connection: %w", err)
 	}
-	defer conn.CloseWithError(0, "")
 
 	tr := &http3.Transport{EnableDatagrams: true}
 	hconn := tr.NewClientConn(conn)
@@ -60,40 +63,39 @@ func run(proxyAddr netip.AddrPort) error {
 	template := uritemplate.MustNew(fmt.Sprintf("https://proxy:%d/vpn", proxyAddr.Port()))
 	ipconn, rsp, err := connectip.Dial(ctx, hconn, template)
 	if err != nil {
-		return fmt.Errorf("failed to dial connect-ip connection: %w", err)
+		return nil, nil, fmt.Errorf("failed to dial connect-ip connection: %w", err)
 	}
 	if rsp.StatusCode != http.StatusOK {
-		return fmt.Errorf("unexpected status code: %d", rsp.StatusCode)
+		return nil, nil, fmt.Errorf("unexpected status code: %d", rsp.StatusCode)
 	}
 	fmt.Printf("connected to VPN: %#v\n", ipconn)
 
 	routes, err := ipconn.Routes(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to get routes: %w", err)
+		return nil, nil, fmt.Errorf("failed to get routes: %w", err)
 	}
 	localPrefixes, err := ipconn.LocalPrefixes(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to get local prefixes: %w", err)
+		return nil, nil, fmt.Errorf("failed to get local prefixes: %w", err)
 	}
 
 	dev, err := water.New(water.Config{DeviceType: water.TUN})
 	if err != nil {
-		return fmt.Errorf("failed to create TUN device: %w", err)
+		return nil, nil, fmt.Errorf("failed to create TUN device: %w", err)
 	}
-	defer dev.Close()
 	log.Printf("created TUN device: %s", dev.Name())
 
 	link, err := netlink.LinkByName(dev.Name())
 	if err != nil {
-		return fmt.Errorf("failed to get TUN interface: %w", err)
+		return nil, nil, fmt.Errorf("failed to get TUN interface: %w", err)
 	}
 	for _, prefix := range localPrefixes {
 		if err := netlink.AddrAdd(link, &netlink.Addr{IPNet: prefixToIPNet(prefix)}); err != nil {
-			return fmt.Errorf("failed to add address assigned by peer %s: %w", prefix, err)
+			return nil, nil, fmt.Errorf("failed to add address assigned by peer %s: %w", prefix, err)
 		}
 	}
 	if err := netlink.LinkSetUp(link); err != nil {
-		return fmt.Errorf("failed to bring up TUN interface: %w", err)
+		return nil, nil, fmt.Errorf("failed to bring up TUN interface: %w", err)
 	}
 
 	for _, route := range routes {
@@ -103,45 +105,54 @@ func run(proxyAddr netip.AddrPort) error {
 				LinkIndex: link.Attrs().Index,
 				Dst:       prefixToIPNet(prefix),
 			}
-			fmt.Printf("%#v\n", r.Dst)
 			if err := netlink.RouteAdd(r); err != nil {
-				return fmt.Errorf("failed to add route: %w", err)
+				return nil, nil, fmt.Errorf("failed to add route: %w", err)
 			}
 		}
 	}
+	return dev, ipconn, nil
+}
 
-	log.Printf("routes added")
-
-	var eg errgroup.Group
-	eg.Go(func() error {
+func proxy(ipconn *connectip.Conn, dev *water.Interface) error {
+	errChan := make(chan error, 2)
+	go func() {
 		for {
 			b := make([]byte, 1500)
 			n, err := ipconn.Read(b)
 			if err != nil {
-				return fmt.Errorf("failed to read from connection: %w", err)
+				errChan <- fmt.Errorf("failed to read from connection: %w", err)
+				return
 			}
 			log.Printf("Read %d bytes from connection", n)
 			if _, err := dev.Write(b[:n]); err != nil {
-				return fmt.Errorf("failed to write to TUN: %w", err)
+				errChan <- fmt.Errorf("failed to write to TUN: %w", err)
+				return
 			}
 		}
-	})
+	}()
 
-	eg.Go(func() error {
+	go func() {
 		for {
 			b := make([]byte, 1500)
 			n, err := dev.Read(b)
 			if err != nil {
-				return fmt.Errorf("failed to read from TUN: %w", err)
+				errChan <- fmt.Errorf("failed to read from TUN: %w", err)
+				return
 			}
 			log.Printf("read %d bytes from TUN", n)
 			if _, err := ipconn.Write(b[:n]); err != nil {
-				return fmt.Errorf("failed to write to connection: %w", err)
+				errChan <- fmt.Errorf("failed to write to connection: %w", err)
+				return
 			}
 		}
-	})
+	}()
 
-	return eg.Wait()
+	err := <-errChan
+	log.Printf("error proxying: %v", err)
+	dev.Close()
+	// TODO: close ipconn
+	// <-errChan // wait for the other goroutine to finish
+	return err
 }
 
 func prefixToIPNet(prefix netip.Prefix) *net.IPNet {

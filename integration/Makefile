@@ -3,7 +3,7 @@
 all: test keygen proxy server client docker-compose cleanup
 
 test:
-	go test -v ./proxy
+	go test -v ./...
 
 keygen:
 	openssl genpkey -algorithm Ed25519 -out proxy/key.pem
@@ -25,4 +25,4 @@ cleanup:
 	rm proxy/key.pem proxy/cert.pem || true
 
 docker-compose:
-	SCENARIO=ping docker compose up --build
+	SCENARIO=ping docker compose up --build --exit-code-from client
