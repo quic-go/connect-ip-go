@@ -14,10 +14,18 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: ${{ matrix.go }}
-      - run: go version
+      - name: Set working directory
+        working-directory: integration
+        run: go version
       - name: Run unit tests
-        run: cd integration && go test ./...
+        working-directory: integration
+        run: go test ./...
+      - name: Build Docker images
+        working-directory: integration
+        run: make build
       - name: Run ping test
-        run: cd integration && make pingtest
+        working-directory: integration
+        run: make pingtest
       - name: Run HTTP test
-        run: cd integration && make httptest
+        working-directory: integration
+        run: make httptest
