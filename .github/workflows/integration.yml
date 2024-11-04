@@ -1,0 +1,31 @@
+on: [push, pull_request]
+
+jobs:
+  unit:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ "ubuntu" ]
+        go: [ "1.22.x", "1.23.x" ]
+    runs-on: ${{ fromJSON(vars[format('INTEGRATION_RUNNER_{0}', matrix.os)] || format('"{0}-latest"', matrix.os)) }}
+    name: Integration tests (${{ matrix.os}}, Go ${{ matrix.go }})
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+      - name: Set working directory
+        working-directory: integration
+        run: go version
+      - name: Run unit tests
+        working-directory: integration
+        run: go test ./...
+      - name: Build Docker images
+        working-directory: integration
+        run: make build
+      - name: Run ping test
+        working-directory: integration
+        run: make pingtest
+      - name: Run HTTP test
+        working-directory: integration
+        run: make httptest
