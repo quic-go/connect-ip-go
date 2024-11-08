@@ -19,6 +19,10 @@ jobs:
         env:
           TIMESCALE_FACTOR: 10
         run: go test -v -cover -coverprofile coverage.txt ./...
+      - name: Run tests with race detector
+        env:
+          TIMESCALE_FACTOR: 10
+        run: go test -v -race ./...
       - name: Run tests (32 bit)
         if: ${{ matrix.os != 'macos' }} # can't run 32 bit tests on OSX.
         env:
