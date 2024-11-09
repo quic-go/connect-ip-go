@@ -33,7 +33,10 @@ type writeCapsule struct {
 	result  chan error
 }
 
-const ipProtoICMP = 1
+const (
+	ipProtoICMP   = 1
+	ipProtoICMPv6 = 58
+)
 
 // Conn is a connection that proxies IP packets over HTTP/3.
 type Conn struct {
@@ -316,7 +319,7 @@ func (c *Conn) handleIncomingProxiedPacket(data []byte) error {
 				return false
 			}
 			// ICMP is always allowed
-			if ipProto == ipProtoICMP {
+			if (ipVersion(data) == 4 && ipProto == ipProtoICMP) || (ipVersion(data) == 6 && ipProto == ipProtoICMPv6) {
 				return true
 			}
 			// TODO: walk the chain of IPv6 extensions
