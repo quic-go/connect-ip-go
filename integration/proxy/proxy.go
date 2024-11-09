@@ -38,6 +38,10 @@ func main() {
 
 	assignAddr := netip.MustParseAddr(os.Getenv("ASSIGN_ADDR"))
 	route := netip.MustParsePrefix(os.Getenv("ROUTE"))
+	ipProtocol, err := strconv.ParseUint(os.Getenv("FILTER_IP_PROTOCOL"), 10, 8)
+	if err != nil {
+		log.Fatalf("failed to parse FILTER_IP_PROTOCOL: %v", err)
+	}
 
 	link, err := netlink.LinkByName(ifaceName)
 	if err != nil {
@@ -71,7 +75,7 @@ func main() {
 	}
 	serverSocketSend = fdSnd
 
-	if err := run(bindProxyTo, assignAddr, route); err != nil {
+	if err := run(bindProxyTo, assignAddr, route, uint8(ipProtocol)); err != nil {
 		log.Fatal(err)
 	}
 }
@@ -142,7 +146,7 @@ func htons(host uint16) uint16 {
 	return (host<<8)&0xff00 | (host>>8)&0xff
 }
 
-func run(bindTo netip.AddrPort, remoteAddr netip.Addr, route netip.Prefix) error {
+func run(bindTo netip.AddrPort, remoteAddr netip.Addr, route netip.Prefix, ipProtocol uint8) error {
 	udpConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: bindTo.Addr().AsSlice(), Port: int(bindTo.Port())})
 	if err != nil {
 		return fmt.Errorf("failed to listen on UDP: %w", err)
@@ -180,7 +184,7 @@ func run(bindTo netip.AddrPort, remoteAddr netip.Addr, route netip.Prefix) error
 			return
 		}
 
-		if err := handleConn(conn, remoteAddr, route); err != nil {
+		if err := handleConn(conn, remoteAddr, route, ipProtocol); err != nil {
 			log.Printf("failed to handle connection: %v", err)
 		}
 	})
@@ -194,14 +198,16 @@ func run(bindTo netip.AddrPort, remoteAddr netip.Addr, route netip.Prefix) error
 	select {}
 }
 
-func handleConn(conn *connectip.Conn, addr netip.Addr, route netip.Prefix) error {
+func handleConn(conn *connectip.Conn, addr netip.Addr, route netip.Prefix, ipProtocol uint8) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	if err := conn.AssignAddresses(ctx, []netip.Prefix{netip.PrefixFrom(addr, addr.BitLen())}); err != nil {
 		return fmt.Errorf("failed to assign addresses: %w", err)
 	}
-	if err := conn.AdvertiseRoute(ctx, []connectip.IPRoute{{StartIP: route.Addr(), EndIP: lastIP(route)}}); err != nil {
+	if err := conn.AdvertiseRoute(ctx, []connectip.IPRoute{
+		{StartIP: route.Addr(), EndIP: lastIP(route), IPProtocol: ipProtocol},
+	}); err != nil {
 		return fmt.Errorf("failed to advertise route: %w", err)
 	}
 
