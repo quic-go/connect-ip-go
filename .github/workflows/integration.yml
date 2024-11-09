@@ -25,7 +25,21 @@ jobs:
         run: make build
       - name: Run ping test
         working-directory: integration
-        run: make pingtest
+        run: |
+          make pingtest
+          make target=logs_ping copylogs
+      - name: Save ping test logs as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs_ping_go${{ matrix.go }}_${{ github.run_id }}
+          path: integration/logs_ping
       - name: Run HTTP test
         working-directory: integration
-        run: make httptest
+        run: |
+          make httptest
+          make target=logs_http copylogs
+      - name: Save HTTP test logs as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs_http_go${{ matrix.go }}_${{ github.run_id }}
+          path: integration/logs_http

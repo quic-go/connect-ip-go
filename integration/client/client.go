@@ -4,12 +4,15 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
 	"net/netip"
 	"net/url"
 	"os"
+	"os/exec"
+	"syscall"
 	"time"
 
 	connectip "github.com/quic-go/connect-ip-go"
@@ -30,10 +33,22 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to parse server host: %v", err)
 	}
-	dev, ipconn, err := establishConn(proxyAddr)
+
+	keyLog, err := os.Create("keys.txt")
+	if err != nil {
+		log.Fatalf("failed to create key log file: %v", err)
+	}
+	defer keyLog.Close()
+	dev, ipconn, err := establishConn(proxyAddr, keyLog)
 	if err != nil {
 		log.Fatalf("failed to establish connection: %v", err)
 	}
+	cmd := exec.Command("tcpdump", "-i", dev.Name(), "-w", "client.pcap", "-U")
+	if err := cmd.Start(); err != nil {
+		log.Fatalf("failed to start tcpdump: %v", err)
+	}
+	time.Sleep(500 * time.Millisecond) // give tcpdump some time to start
+	log.Printf("started tcpdump on TUN device: %s in the background", dev.Name())
 	go proxy(ipconn, dev)
 
 	switch os.Getenv("TESTCASE") {
@@ -48,9 +63,17 @@ func main() {
 	default:
 		log.Fatalf("unknown testcase: %s", os.Getenv("TESTCASE"))
 	}
+
+	time.Sleep(time.Second) // give tcpdump some time to write the last packets
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		log.Printf("failed to send SIGTERM signal to tcpdump process: %v", err)
+	}
+	if err := cmd.Wait(); err != nil {
+		log.Printf("tcpdump process exited with error: %v", err)
+	}
 }
 
-func establishConn(proxyAddr netip.AddrPort) (*water.Interface, *connectip.Conn, error) {
+func establishConn(proxyAddr netip.AddrPort, keyLog io.Writer) (*water.Interface, *connectip.Conn, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -67,6 +90,7 @@ func establishConn(proxyAddr netip.AddrPort) (*water.Interface, *connectip.Conn,
 			ServerName:         "proxy",
 			InsecureSkipVerify: true,
 			NextProtos:         []string{http3.NextProtoH3},
+			KeyLogWriter:       keyLog,
 		},
 		&quic.Config{EnableDatagrams: true, KeepAlivePeriod: 10 * time.Second},
 	)
