@@ -33,6 +33,8 @@ type writeCapsule struct {
 	result  chan error
 }
 
+const ipProtoICMP = 1
+
 // Conn is a connection that proxies IP packets over HTTP/3.
 type Conn struct {
 	str    http3.Stream
@@ -313,9 +315,13 @@ func (c *Conn) handleIncomingProxiedPacket(data []byte) error {
 			if r.StartIP.Compare(dst) > 0 || dst.Compare(r.EndIP) > 0 {
 				return false
 			}
+			// ICMP is always allowed
+			if ipProto == ipProtoICMP {
+				return true
+			}
 			// TODO: walk the chain of IPv6 extensions
 			// See section 4.8 of RFC 9484 for details.
-			return ipProto == 0 || r.IPProtocol == 0 || r.IPProtocol == ipProto
+			return r.IPProtocol == 0 || r.IPProtocol == ipProto
 		})
 	}
 	if !isAllowedDst {
