@@ -1,25 +1,24 @@
-.PHONY: all build client docker-build server proxy pingtest httptest
+.PHONY: all build endpoints docker-build proxy pingtest httptest http3test
 
-build: proxy server client docker-build cleanup
+build: proxy endpoints docker-build cleanup
 
 proxy:
 	GOOS=linux go build -o proxy/proxy ./proxy
 
-server:
+endpoints:
+	openssl req -new -x509 -newkey Ed25519 -keyout server/key.pem -out server/cert.pem -days 365 -subj "/C=US/ST=State/L=City/O=Organization/OU=Unit/CN=server" -nodes
 	GOOS=linux go build -o server/server ./server
-
-client:
 	GOOS=linux go build -o client/client ./client
 
 docker-build:
-	openssl genpkey -algorithm Ed25519 -out proxy/key.pem
-	openssl req -new -x509 -key proxy/key.pem -out proxy/cert.pem -days 365 -subj "/C=US/ST=State/L=City/O=Organization/OU=Unit/CN=example.com"
-	docker compose build
+	openssl req -new -x509 -newkey Ed25519 -keyout proxy/key.pem -out proxy/cert.pem -days 365 -subj "/C=US/ST=State/L=City/O=Organization/OU=Unit/CN=proxy" -nodes
+	TESTCASE=build docker compose build
 
 cleanup:
 	rm client/client || true
 	rm server/server || true
 	rm proxy/proxy || true
+	rm server/key.pem server/cert.pem || true
 	rm proxy/key.pem proxy/cert.pem || true
 
 pingtest:
@@ -27,6 +26,9 @@ pingtest:
 
 httptest:
 	TESTCASE=http docker compose up --exit-code-from client
+
+http3test:
+	TESTCASE=http3 docker compose up --exit-code-from client
 
 copylogs:
 	mkdir -p $(target)
@@ -36,3 +38,4 @@ copylogs:
 	docker cp server:/server.pcap $(target)/
 	docker cp proxy:/proxy_eth0.pcap $(target)/
 	docker cp proxy:/proxy_eth1.pcap $(target)/
+

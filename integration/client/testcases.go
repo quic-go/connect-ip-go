@@ -54,8 +54,9 @@ func ping(dst netip.Addr, interval time.Duration, count int) (transmitted, recei
 	return
 }
 
-func runHTTPTest(url string) error {
-	resp, err := http.Get(url)
+func runHTTPTest(rt http.RoundTripper, url string) error {
+	client := &http.Client{Transport: rt}
+	resp, err := client.Get(url)
 	if err != nil {
 		return err
 	}
