@@ -11,4 +11,6 @@ for route in $(ip route show | grep -v default | awk '{print $1}'); do
     ip route del $route
 done
 
+tcpdump -i eth0 -w server.pcap -U &
+
 ./server

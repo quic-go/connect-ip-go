@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -30,7 +31,13 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to parse server host: %v", err)
 	}
-	dev, ipconn, err := establishConn(proxyAddr)
+
+	keyLog, err := os.Create("keys.txt")
+	if err != nil {
+		log.Fatalf("failed to create key log file: %v", err)
+	}
+	defer keyLog.Close()
+	dev, ipconn, err := establishConn(proxyAddr, keyLog)
 	if err != nil {
 		log.Fatalf("failed to establish connection: %v", err)
 	}
@@ -50,7 +57,7 @@ func main() {
 	}
 }
 
-func establishConn(proxyAddr netip.AddrPort) (*water.Interface, *connectip.Conn, error) {
+func establishConn(proxyAddr netip.AddrPort, keyLog io.Writer) (*water.Interface, *connectip.Conn, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -67,6 +74,7 @@ func establishConn(proxyAddr netip.AddrPort) (*water.Interface, *connectip.Conn,
 			ServerName:         "proxy",
 			InsecureSkipVerify: true,
 			NextProtos:         []string{http3.NextProtoH3},
+			KeyLogWriter:       keyLog,
 		},
 		&quic.Config{EnableDatagrams: true, KeepAlivePeriod: 10 * time.Second},
 	)
