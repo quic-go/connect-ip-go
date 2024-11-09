@@ -43,3 +43,13 @@ jobs:
         with:
           name: logs_http_go${{ matrix.go }}_${{ github.run_id }}
           path: integration/logs_http
+      - name: Run HTTP/3 test
+        working-directory: integration
+        run: |
+          make http3test
+          make target=logs_http3 copylogs
+      - name: Save HTTP/3 test logs as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs_http3_go${{ matrix.go }}_${{ github.run_id }}
+          path: integration/logs_http3

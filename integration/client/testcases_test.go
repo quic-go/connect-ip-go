@@ -44,6 +44,6 @@ func TestHTTPServer(t *testing.T) {
 	time.Sleep(100 * time.Millisecond) // give the server a moment to start
 
 	baseURL := fmt.Sprintf("http://127.0.0.1:%d", ln.Addr().(*net.TCPAddr).Port)
-	require.NoError(t, runHTTPTest(baseURL+"/hello"))
-	require.Error(t, runHTTPTest(baseURL+"/not-hello"))
+	require.NoError(t, runHTTPTest(http.DefaultTransport, baseURL+"/hello"))
+	require.Error(t, runHTTPTest(http.DefaultTransport, baseURL+"/not-hello"))
 }

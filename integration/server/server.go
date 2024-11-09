@@ -5,6 +5,9 @@ import (
 	"log"
 	"net/http"
 	"os"
+
+	"github.com/quic-go/quic-go"
+	"github.com/quic-go/quic-go/http3"
 )
 
 func main() {
@@ -12,10 +15,22 @@ func main() {
 		fmt.Fprintf(w, "Hello, World!\n")
 	})
 
-	srv := &http.Server{Addr: ":80"}
+	go func() {
+		if err := http.ListenAndServe(":80", nil); err != nil {
+			log.Printf("HTTP server failed: %v\n", err)
+			os.Exit(1)
+		}
+	}()
 
-	if err := srv.ListenAndServe(); err != nil {
-		log.Printf("Server failed: %v\n", err)
+	server := http3.Server{
+		Addr: ":443",
+		QUICConfig: &quic.Config{
+			InitialPacketSize: 1200,
+			EnableDatagrams:   true,
+		},
+	}
+	if err := server.ListenAndServeTLS("cert.pem", "key.pem"); err != nil {
+		log.Printf("HTTP/3 server failed: %v\n", err)
 		os.Exit(1)
 	}
 }

@@ -9,7 +9,6 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
-	"net/url"
 	"os"
 	"os/exec"
 	"syscall"
@@ -25,13 +24,9 @@ import (
 
 func main() {
 	proxyAddr := netip.MustParseAddrPort(os.Getenv("PROXY_ADDR"))
-	serverURL, err := url.Parse(os.Getenv("SERVER_ADDR"))
+	serverAddr, err := netip.ParseAddr(os.Getenv("SERVER_ADDR"))
 	if err != nil {
 		log.Fatalf("failed to parse server URL: %v", err)
-	}
-	serverAddr, err := netip.ParseAddrPort(serverURL.Host)
-	if err != nil {
-		log.Fatalf("failed to parse server host: %v", err)
 	}
 
 	keyLog, err := os.Create("keys.txt")
@@ -53,12 +48,27 @@ func main() {
 
 	switch os.Getenv("TESTCASE") {
 	case "ping":
-		if err := runPingTest(serverAddr.Addr()); err != nil {
+		if err := runPingTest(serverAddr); err != nil {
 			log.Fatalf("ping test failed: %v", err)
 		}
 	case "http":
-		if err := runHTTPTest(serverURL.String()); err != nil {
+		tr := &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		}
+		if err := runHTTPTest(tr, fmt.Sprintf("http://%s/hello", serverAddr)); err != nil {
 			log.Fatalf("HTTP test failed: %v", err)
+		}
+	case "http3":
+		tr := &http3.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			QUICConfig: &quic.Config{
+				InitialPacketSize: 1200,
+				EnableDatagrams:   true,
+			},
+		}
+		defer tr.Close()
+		if err := runHTTPTest(tr, fmt.Sprintf("https://%s/hello", serverAddr)); err != nil {
+			log.Fatalf("HTTP/3 test failed: %v", err)
 		}
 	default:
 		log.Fatalf("unknown testcase: %s", os.Getenv("TESTCASE"))
@@ -92,7 +102,10 @@ func establishConn(proxyAddr netip.AddrPort, keyLog io.Writer) (*water.Interface
 			NextProtos:         []string{http3.NextProtoH3},
 			KeyLogWriter:       keyLog,
 		},
-		&quic.Config{EnableDatagrams: true, KeepAlivePeriod: 10 * time.Second},
+		&quic.Config{
+			EnableDatagrams:   true,
+			InitialPacketSize: 1350,
+		},
 	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to dial QUIC connection: %w", err)
@@ -129,6 +142,9 @@ func establishConn(proxyAddr netip.AddrPort, keyLog io.Writer) (*water.Interface
 	link, err := netlink.LinkByName(dev.Name())
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to get TUN interface: %w", err)
+	}
+	if err := netlink.LinkSetMTU(link, 1280); err != nil {
+		return nil, nil, fmt.Errorf("failed to set MTU: %w", err)
 	}
 	for _, prefix := range localPrefixes {
 		if err := netlink.AddrAdd(link, &netlink.Addr{IPNet: prefixToIPNet(prefix)}); err != nil {
