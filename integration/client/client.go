@@ -11,6 +11,8 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"os/exec"
+	"syscall"
 	"time"
 
 	connectip "github.com/quic-go/connect-ip-go"
@@ -41,6 +43,12 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to establish connection: %v", err)
 	}
+	cmd := exec.Command("tcpdump", "-i", dev.Name(), "-w", "client.pcap", "-U")
+	if err := cmd.Start(); err != nil {
+		log.Fatalf("failed to start tcpdump: %v", err)
+	}
+	time.Sleep(500 * time.Millisecond) // give tcpdump some time to start
+	log.Printf("started tcpdump on TUN device: %s in the background", dev.Name())
 	go proxy(ipconn, dev)
 
 	switch os.Getenv("TESTCASE") {
@@ -54,6 +62,14 @@ func main() {
 		}
 	default:
 		log.Fatalf("unknown testcase: %s", os.Getenv("TESTCASE"))
+	}
+
+	time.Sleep(time.Second) // give tcpdump some time to write the last packets
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		log.Printf("failed to send SIGTERM signal to tcpdump process: %v", err)
+	}
+	if err := cmd.Wait(); err != nil {
+		log.Printf("tcpdump process exited with error: %v", err)
 	}
 }
 
