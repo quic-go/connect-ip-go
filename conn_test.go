@@ -170,7 +170,7 @@ func TestIncomingDatagrams(t *testing.T) {
 		)
 
 		// ICMP is always allowed
-		hdr.Protocol = 0
+		hdr.Protocol = ipProtoICMP
 		data, err = hdr.Marshal()
 		require.NoError(t, err)
 		require.NoError(t, conn.handleIncomingProxiedPacket(data))
