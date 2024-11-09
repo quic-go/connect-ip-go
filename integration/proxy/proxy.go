@@ -216,7 +216,7 @@ func handleConn(conn *connectip.Conn, addr netip.Addr, route netip.Prefix) error
 
 	err := <-errChan
 	log.Printf("error proxying: %v", err)
-	// TODO: close ipconn
-	// <-errChan // wait for the other goroutine to finish
+	conn.Close()
+	<-errChan // wait for the other goroutine to finish
 	return err
 }

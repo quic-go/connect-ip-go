@@ -229,3 +229,67 @@ func TestTTLs(t *testing.T) {
 		require.Equal(t, 41, receivedHdr.HopLimit)
 	})
 }
+
+func TestClosing(t *testing.T) {
+	ipv6Packet := []byte{
+		0x60, 0x00, 0x00, 0x00, // Version, Traffic Class, Flow Label
+		0x00, 0x00, // Payload Length
+		0x00, 0x2A, // Next Header, Hop Limit (42)
+		0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, // Source IP
+		0x20, 0x01, 0x48, 0x60, 0x48, 0x60, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x88, 0x88, // Destination IP
+	}
+
+	client, server := setupConns(t)
+	routeErrChan := make(chan error, 1)
+	prefixErrChan := make(chan error, 1)
+	go func() {
+		_, err := server.Routes(context.Background())
+		routeErrChan <- err
+	}()
+	go func() {
+		_, err := server.LocalPrefixes(context.Background())
+		prefixErrChan <- err
+	}()
+
+	require.NoError(t, client.Close())
+	_, err := client.LocalPrefixes(context.Background())
+	require.ErrorIs(t, err, net.ErrClosed)
+	var closeErr *CloseError
+	require.ErrorAs(t, err, &closeErr)
+	require.False(t, closeErr.Remote)
+	_, err = client.Routes(context.Background())
+	require.ErrorIs(t, err, net.ErrClosed)
+	require.ErrorIs(t,
+		client.AssignAddresses(context.Background(), []netip.Prefix{netip.MustParsePrefix("1.1.1.0/24")}),
+		net.ErrClosed,
+	)
+	require.ErrorIs(t,
+		client.AdvertiseRoute(context.Background(), []IPRoute{
+			{StartIP: netip.MustParseAddr("1.1.1.0"), EndIP: netip.MustParseAddr("1.1.1.1"), IPProtocol: 42},
+		}),
+		net.ErrClosed,
+	)
+	_, err = client.Read([]byte{0})
+	require.ErrorIs(t, err, net.ErrClosed)
+	_, err = client.Write(ipv6Packet)
+	require.ErrorIs(t, err, net.ErrClosed)
+
+	select {
+	case err := <-routeErrChan:
+		require.ErrorIs(t, err, net.ErrClosed)
+	case <-time.After(time.Second):
+		t.Fatal("timeout")
+	}
+
+	select {
+	case err := <-prefixErrChan:
+		require.ErrorIs(t, err, net.ErrClosed)
+	case <-time.After(time.Second):
+		t.Fatal("timeout")
+	}
+
+	_, err = server.Read([]byte{0})
+	require.ErrorIs(t, err, net.ErrClosed)
+	_, err = server.Write(ipv6Packet)
+	require.ErrorIs(t, err, net.ErrClosed)
+}
