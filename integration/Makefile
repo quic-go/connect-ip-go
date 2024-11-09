@@ -22,22 +22,28 @@ cleanup:
 	rm proxy/key.pem proxy/cert.pem || true
 
 ping:
-	TESTCASE=ping docker compose --env-file ipv4.env up --exit-code-from client
+	FILTER_IP_PROTOCOL=0 TESTCASE=ping docker compose --env-file ipv4.env up --exit-code-from client
 
 pingv6:
-	TESTCASE=ping docker compose --env-file ipv6.env up --exit-code-from client
+	FILTER_IP_PROTOCOL=0 TESTCASE=ping docker compose --env-file ipv6.env up --exit-code-from client
 
 http:
-	TESTCASE=http docker compose --env-file ipv4.env up --exit-code-from client
+	FILTER_IP_PROTOCOL=0 TESTCASE=http docker compose --env-file ipv4.env up --exit-code-from client
 
 httpv6:
-	TESTCASE=http docker compose --env-file ipv6.env up --exit-code-from client
+	FILTER_IP_PROTOCOL=0 TESTCASE=http docker compose --env-file ipv6.env up --exit-code-from client
 
 http3:
-	TESTCASE=http3 docker compose --env-file ipv4.env up --exit-code-from client
+	FILTER_IP_PROTOCOL=0 TESTCASE=http3 docker compose --env-file ipv4.env up --exit-code-from client
 
 http3v6:
-	TESTCASE=http3 docker compose --env-file ipv6.env up --exit-code-from client
+	FILTER_IP_PROTOCOL=0 TESTCASE=http3 docker compose --env-file ipv6.env up --exit-code-from client
+
+filtertcp:
+	FILTER_IP_PROTOCOL=6 TESTCASE=filtertcp docker compose --env-file ipv4.env up --exit-code-from client
+
+filtertcpv6:
+	FILTER_IP_PROTOCOL=6 TESTCASE=filtertcp docker compose --env-file ipv6.env up --exit-code-from client
 
 copylogs:
 	mkdir -p $(target)

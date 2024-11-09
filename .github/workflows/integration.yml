@@ -73,6 +73,22 @@ jobs:
           make target=logs_http3v6 copylogs
           exit $status
 
+      - name: Run IP protocol filter test
+        working-directory: integration
+        if: success() || failure() # run this step even if the previous one failed
+        run: |
+          make filtertcp || status=$?
+          make target=logs_filtertcp copylogs
+          exit $status
+
+      - name: Run IP protocol filter test on IPv6
+        working-directory: integration
+        if: success() || failure() # run this step even if the previous one failed
+        run: |
+          make filtertcpv6 || status=$?
+          make target=logs_filtertcpv6 copylogs
+          exit $status
+
       - name: Save logs
         uses: actions/upload-artifact@v4
         if: success() || failure() # run this step even if the previous one failed
@@ -85,3 +101,5 @@ jobs:
             integration/logs_httpv6
             integration/logs_http3
             integration/logs_http3v6
+            integration/logs_filtertcp
+            integration/logs_filtertcpv6

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -53,14 +54,11 @@ func main() {
 
 	switch os.Getenv("TESTCASE") {
 	case "ping":
-		if err := runPingTest(serverAddr); err != nil {
+		if err := runPingTest(serverAddr, 50); err != nil {
 			log.Fatalf("ping test failed: %v", err)
 		}
 	case "http":
-		tr := &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-		}
-		if err := runHTTPTest(tr, fmt.Sprintf("http://%s/hello", ipForURL(serverAddr))); err != nil {
+		if err := runHTTPTest(http.DefaultTransport, fmt.Sprintf("http://%s/hello", ipForURL(serverAddr))); err != nil {
 			log.Fatalf("HTTP test failed: %v", err)
 		}
 	case "http3":
@@ -74,6 +72,29 @@ func main() {
 		defer tr.Close()
 		if err := runHTTPTest(tr, fmt.Sprintf("https://%s/hello", ipForURL(serverAddr))); err != nil {
 			log.Fatalf("HTTP/3 test failed: %v", err)
+		}
+	case "filtertcp":
+		// ICMP is always allowed
+		if err := runPingTest(serverAddr, 10); err != nil {
+			log.Fatalf("ping test failed: %v", err)
+		}
+		// TCP is explicitly allowed
+		if err := runHTTPTest(http.DefaultTransport, fmt.Sprintf("http://%s/hello", ipForURL(serverAddr))); err != nil {
+			log.Fatalf("HTTP test failed: %v", err)
+		}
+		// UDP is not allowed
+		tr := &http3.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			QUICConfig: &quic.Config{
+				InitialPacketSize:    1200,
+				EnableDatagrams:      true,
+				HandshakeIdleTimeout: time.Second,
+			},
+		}
+		defer tr.Close()
+		err := runHTTPTest(tr, fmt.Sprintf("https://%s/hello", ipForURL(serverAddr)))
+		if err == nil || !errors.Is(err, &quic.IdleTimeoutError{}) {
+			log.Fatalf("HTTP/3 test should have resulted in a timeout error, but got: %v", err)
 		}
 	default:
 		log.Fatalf("unknown testcase: %s", os.Getenv("TESTCASE"))

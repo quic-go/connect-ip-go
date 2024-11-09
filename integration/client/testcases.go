@@ -11,8 +11,7 @@ import (
 	"time"
 )
 
-func runPingTest(dst netip.Addr) error {
-	const num = 50
+func runPingTest(dst netip.Addr, num int) error {
 	start := time.Now()
 	transmitted, received, err := ping(dst, 50*time.Millisecond, num)
 	if err != nil {
