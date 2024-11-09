@@ -127,7 +127,7 @@ func establishConn(proxyAddr netip.AddrPort, keyLog io.Writer) (*water.Interface
 	if rsp.StatusCode != http.StatusOK {
 		return nil, nil, fmt.Errorf("unexpected status code: %d", rsp.StatusCode)
 	}
-	fmt.Printf("connected to VPN: %#v\n", ipconn)
+	log.Printf("connected to VPN server: %s", proxyAddr)
 
 	routes, err := ipconn.Routes(ctx)
 	if err != nil {

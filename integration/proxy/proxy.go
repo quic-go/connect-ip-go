@@ -195,8 +195,6 @@ func run(bindTo netip.AddrPort, remoteAddr netip.Addr, route netip.Prefix) error
 }
 
 func handleConn(conn *connectip.Conn, addr netip.Addr, route netip.Prefix) error {
-	log.Printf("new connection: %#v", conn)
-
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
