@@ -3,12 +3,12 @@
 build: proxy endpoints docker-build cleanup
 
 proxy:
-	GOOS=linux go build -o proxy/proxy ./proxy
+	GOOS=linux go build $(if $(RACE),-race) -o proxy/proxy ./proxy
 
 endpoints:
 	openssl req -new -x509 -newkey Ed25519 -keyout server/key.pem -out server/cert.pem -days 365 -subj "/C=US/ST=State/L=City/O=Organization/OU=Unit/CN=server" -nodes
-	GOOS=linux go build -o server/server ./server
-	GOOS=linux go build -o client/client ./client
+	GOOS=linux go build $(if $(RACE),-race) -o server/server ./server
+	GOOS=linux go build $(if $(RACE),-race) -o client/client ./client
 
 docker-build:
 	openssl req -new -x509 -newkey Ed25519 -keyout proxy/key.pem -out proxy/cert.pem -days 365 -subj "/C=US/ST=State/L=City/O=Organization/OU=Unit/CN=proxy" -nodes

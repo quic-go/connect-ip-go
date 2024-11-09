@@ -22,6 +22,8 @@ jobs:
         run: go test ./...
       - name: Build Docker images
         working-directory: integration
+        env:
+          RACE: true
         run: make build
 
       - name: Run ping test
