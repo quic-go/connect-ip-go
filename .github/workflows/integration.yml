@@ -29,41 +29,53 @@ jobs:
       - name: Run ping test
         working-directory: integration
         run: |
-          make ping
+          make ping || status=$?
           make target=logs_ping copylogs
+          exit $status
 
       - name: Run ping test on IPv6
         working-directory: integration
+        if: success() || failure() # run this step even if the previous one failed
         run: |
-          make pingv6
+          make pingv6 || status=$?
           make target=logs_pingv6 copylogs
+          exit $status
 
       - name: Run HTTP test
         working-directory: integration
+        if: success() || failure() # run this step even if the previous one failed
         run: |
-          make http
+          make http || status=$?
           make target=logs_http copylogs
+          exit $status
 
       - name: Run HTTP test on IPv6
         working-directory: integration
+        if: success() || failure() # run this step even if the previous one failed
         run: |
-          make httpv6
+          make httpv6 || status=$?
           make target=logs_httpv6 copylogs
+          exit $status
 
       - name: Run HTTP/3 test
         working-directory: integration
+        if: success() || failure() # run this step even if the previous one failed
         run: |
-          make http3
+          make http3 || status=$?
           make target=logs_http3 copylogs
+          exit $status
 
       - name: Run HTTP/3 test on IPv6
         working-directory: integration
+        if: success() || failure() # run this step even if the previous one failed
         run: |
-          make http3v6
+          make http3v6 || status=$?
           make target=logs_http3v6 copylogs
+          exit $status
 
       - name: Save logs
         uses: actions/upload-artifact@v4
+        if: success() || failure() # run this step even if the previous one failed
         with:
           name: logs_go${{ matrix.go }}_${{ github.run_id }}
           path: |
