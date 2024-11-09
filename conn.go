@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/netip"
 	"slices"
 	"sync"
@@ -13,9 +14,17 @@ import (
 	"golang.org/x/net/ipv4"
 	"golang.org/x/net/ipv6"
 
+	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 	"github.com/quic-go/quic-go/quicvarint"
 )
+
+type CloseError struct {
+	Remote bool
+}
+
+func (e *CloseError) Error() string        { return net.ErrClosed.Error() }
+func (e *CloseError) Is(target error) bool { return target == net.ErrClosed }
 
 type appendable interface{ append([]byte) []byte }
 
@@ -37,6 +46,9 @@ type Conn struct {
 	localRoutes       []IPRoute      // IP routes that we advertised to the peer
 	assignedAddresses []netip.Prefix
 	availableRoutes   []IPRoute
+
+	closeChan chan struct{}
+	closeErr  error
 }
 
 func newProxiedConn(str http3.Stream) *Conn {
@@ -45,15 +57,28 @@ func newProxiedConn(str http3.Stream) *Conn {
 		writes:                make(chan writeCapsule),
 		assignedAddressNotify: make(chan struct{}, 1),
 		availableRoutesNotify: make(chan struct{}, 1),
+		closeChan:             make(chan struct{}),
 	}
 	go func() {
 		if err := c.readFromStream(); err != nil {
 			log.Printf("handling stream failed: %v", err)
+			c.mu.Lock()
+			if c.closeErr == nil {
+				c.closeErr = &CloseError{Remote: true}
+				close(c.closeChan)
+			}
+			c.mu.Unlock()
 		}
 	}()
 	go func() {
 		if err := c.writeToStream(); err != nil {
 			log.Printf("writing to stream failed: %v", err)
+			c.mu.Lock()
+			if c.closeErr == nil {
+				c.closeErr = &CloseError{Remote: true}
+				close(c.closeChan)
+			}
+			c.mu.Unlock()
 		}
 	}()
 	return c
@@ -101,6 +126,8 @@ func (c *Conn) sendCapsule(ctx context.Context, capsule appendable) error {
 		case err := <-res:
 			return err
 		}
+	case <-c.closeChan:
+		return c.closeErr
 	case <-ctx.Done():
 		return ctx.Err()
 	}
@@ -113,6 +140,8 @@ func (c *Conn) LocalPrefixes(ctx context.Context) ([]netip.Prefix, error) {
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
+	case <-c.closeChan:
+		return nil, c.closeErr
 	case <-c.assignedAddressNotify:
 		c.mu.Lock()
 		defer c.mu.Unlock()
@@ -127,6 +156,8 @@ func (c *Conn) Routes(ctx context.Context) ([]IPRoute, error) {
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
+	case <-c.closeChan:
+		return nil, c.closeErr
 	case <-c.availableRoutesNotify:
 		c.mu.Lock()
 		defer c.mu.Unlock()
@@ -185,15 +216,19 @@ func (c *Conn) readFromStream() error {
 func (c *Conn) writeToStream() error {
 	buf := make([]byte, 0, 1024)
 	for {
-		req, ok := <-c.writes
-		if !ok {
-			return nil
-		}
-		buf = req.capsule.append(buf[:0])
-		_, err := c.str.Write(buf)
-		req.result <- err
-		if err != nil {
-			return err
+		select {
+		case <-c.closeChan:
+			return c.closeErr
+		case req, ok := <-c.writes:
+			if !ok {
+				return nil
+			}
+			buf = req.capsule.append(buf[:0])
+			_, err := c.str.Write(buf)
+			req.result <- err
+			if err != nil {
+				return err
+			}
 		}
 	}
 }
@@ -202,7 +237,12 @@ func (c *Conn) Read(b []byte) (n int, err error) {
 start:
 	data, err := c.str.ReceiveDatagram(context.Background())
 	if err != nil {
-		return 0, err
+		select {
+		case <-c.closeChan:
+			return 0, c.closeErr
+		default:
+			return 0, err
+		}
 	}
 	contextID, n, err := quicvarint.Parse(data)
 	if err != nil {
@@ -291,7 +331,16 @@ func (c *Conn) Write(b []byte) (n int, err error) {
 		log.Printf("dropping proxied packet (%d bytes) that can't be proxied: %s", len(b), err)
 		return 0, nil
 	}
-	return len(b), c.str.SendDatagram(data)
+	if err := c.str.SendDatagram(data); err != nil {
+		fmt.Println("send datagram error", err)
+		select {
+		case <-c.closeChan:
+			return 0, c.closeErr
+		default:
+			return 0, err
+		}
+	}
+	return len(b), nil
 }
 
 func (c *Conn) composeDatagram(b []byte) ([]byte, error) {
@@ -327,6 +376,18 @@ func (c *Conn) composeDatagram(b []byte) ([]byte, error) {
 	data = append(data, contextIDZero...)
 	data = append(data, b...)
 	return data, nil
+}
+
+func (c *Conn) Close() error {
+	c.mu.Lock()
+	if c.closeErr == nil {
+		c.closeErr = &CloseError{Remote: false}
+		close(c.closeChan)
+	}
+	c.mu.Unlock()
+	c.str.CancelRead(quic.StreamErrorCode(http3.ErrCodeNoError))
+	err := c.str.Close()
+	return err
 }
 
 func ipVersion(b []byte) uint8 { return b[0] >> 4 }

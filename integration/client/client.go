@@ -167,8 +167,8 @@ func proxy(ipconn *connectip.Conn, dev *water.Interface) error {
 	err := <-errChan
 	log.Printf("error proxying: %v", err)
 	dev.Close()
-	// TODO: close ipconn
-	// <-errChan // wait for the other goroutine to finish
+	ipconn.Close()
+	<-errChan // wait for the other goroutine to finish
 	return err
 }
 
