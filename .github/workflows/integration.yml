@@ -31,63 +31,45 @@ jobs:
         run: |
           make ping
           make target=logs_ping copylogs
-      - name: Save ping test logs as artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: logs_ping_go${{ matrix.go }}_${{ github.run_id }}
-          path: integration/logs_ping
 
       - name: Run ping test on IPv6
         working-directory: integration
         run: |
           make pingv6
           make target=logs_pingv6 copylogs
-      - name: Save ping test logs as artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: logs_pingv6_go${{ matrix.go }}_${{ github.run_id }}
-          path: integration/logs_pingv6
 
       - name: Run HTTP test
         working-directory: integration
         run: |
           make http
           make target=logs_http copylogs
-      - name: Save HTTP test logs as artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: logs_http_go${{ matrix.go }}_${{ github.run_id }}
-          path: integration/logs_http
 
       - name: Run HTTP test on IPv6
         working-directory: integration
         run: |
           make httpv6
           make target=logs_httpv6 copylogs
-      - name: Save HTTP test logs as artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: logs_httpv6_go${{ matrix.go }}_${{ github.run_id }}
-          path: integration/logs_httpv6
 
       - name: Run HTTP/3 test
         working-directory: integration
         run: |
           make http3
           make target=logs_http3 copylogs
-      - name: Save HTTP/3 test logs as artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: logs_http3_go${{ matrix.go }}_${{ github.run_id }}
-          path: integration/logs_http3
 
       - name: Run HTTP/3 test on IPv6
         working-directory: integration
         run: |
           make http3v6
           make target=logs_http3v6 copylogs
-      - name: Save HTTP/3 test logs as artifact
+
+      - name: Save logs
         uses: actions/upload-artifact@v4
         with:
-          name: logs_http3v6_go${{ matrix.go }}_${{ github.run_id }}
-          path: integration/logs_http3v6
+          name: logs_go${{ matrix.go }}_${{ github.run_id }}
+          path: |
+            integration/logs_ping
+            integration/logs_pingv6
+            integration/logs_http
+            integration/logs_httpv6
+            integration/logs_http3
+            integration/logs_http3v6
