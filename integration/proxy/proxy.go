@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/netip"
 	"os"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -24,12 +25,17 @@ import (
 	"github.com/yosida95/uritemplate/v3"
 )
 
-var serverSocketRcv, serverSockedSend int
+var serverSocketRcv, serverSocketSend int
 
 const ifaceName = "eth1"
 
 func main() {
-	bindProxyTo := netip.MustParseAddrPort(os.Getenv("BIND_PROXY_TO"))
+	proxyPort, err := strconv.Atoi(os.Getenv("PROXY_PORT"))
+	if err != nil {
+		log.Fatalf("failed to parse proxy port: %v", err)
+	}
+	bindProxyTo := netip.AddrPortFrom(netip.MustParseAddr(os.Getenv("PROXY_ADDR")), uint16(proxyPort))
+
 	assignAddr := netip.MustParseAddr(os.Getenv("ASSIGN_ADDR"))
 	route := netip.MustParsePrefix(os.Getenv("ROUTE"))
 
@@ -37,7 +43,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to get %s interface: %v", ifaceName, err)
 	}
-	addrs, err := netlink.AddrList(link, netlink.FAMILY_V4)
+	family := netlink.FAMILY_V4
+	if assignAddr.Is6() {
+		family = netlink.FAMILY_V6
+	}
+	addrs, err := netlink.AddrList(link, family)
 	if err != nil {
 		log.Fatalf("failed to get addresses for %s: %v", ifaceName, err)
 	}
@@ -59,18 +69,19 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to create send socket: %v", err)
 	}
-	serverSockedSend = fdSnd
+	serverSocketSend = fdSnd
 
 	if err := run(bindProxyTo, assignAddr, route); err != nil {
 		log.Fatal(err)
 	}
 }
 
-// This works, but we need to set the Ethernet address when sending a packet.
-// works with hping3, but not with ping.
-func createReceiveSocket(netip.Addr) (int, error) {
-	// Create a raw IP socket
-	fd, err := unix.Socket(unix.AF_PACKET, unix.SOCK_DGRAM, int(htons(unix.ETH_P_IP)))
+func createReceiveSocket(a netip.Addr) (int, error) {
+	proto := unix.ETH_P_IP
+	if a.Is6() {
+		proto = unix.ETH_P_IPV6
+	}
+	fd, err := unix.Socket(unix.AF_PACKET, unix.SOCK_DGRAM, int(htons(uint16(proto))))
 	if err != nil {
 		return 0, fmt.Errorf("creating socket: %w", err)
 	}
@@ -79,7 +90,7 @@ func createReceiveSocket(netip.Addr) (int, error) {
 		return 0, fmt.Errorf("interface lookup failed: %w", err)
 	}
 	addr := &syscall.SockaddrLinklayer{
-		Protocol: htons(unix.ETH_P_IP),
+		Protocol: htons(uint16(proto)),
 		Ifindex:  iface.Index,
 	}
 	if err := syscall.Bind(fd, addr); err != nil {
@@ -89,6 +100,13 @@ func createReceiveSocket(netip.Addr) (int, error) {
 }
 
 func createSendSocket(addr netip.Addr) (int, error) {
+	if addr.Is4() {
+		return createSendSocketIPv4(addr)
+	}
+	return createSendSocketIPv6(addr)
+}
+
+func createSendSocketIPv4(addr netip.Addr) (int, error) {
 	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_RAW, unix.IPPROTO_RAW)
 	if err != nil {
 		return 0, fmt.Errorf("creating socket: %w", err)
@@ -96,15 +114,24 @@ func createSendSocket(addr netip.Addr) (int, error) {
 	if err := unix.SetsockoptInt(fd, unix.IPPROTO_IP, unix.IP_HDRINCL, 1); err != nil {
 		return 0, fmt.Errorf("setting IP_HDRINCL: %w", err)
 	}
-	// iface, err := net.InterfaceByName("eth1")
-	// if err != nil {
-	// 	return 0, fmt.Errorf("Interface lookup failed: %v", err)
-	// }
-	sa := &unix.SockaddrInet4{
-		Port: 0, // Raw sockets don't use ports
+	sa := &unix.SockaddrInet4{Port: 0} // raw sockets don't use ports
+	copy(sa.Addr[:], addr.AsSlice())
+	if err := unix.Bind(fd, sa); err != nil {
+		return 0, fmt.Errorf("binding socket: %w", err)
 	}
-	copy(sa.Addr[:], addr.AsSlice()) // Copy IP address bytes
+	return fd, nil
+}
 
+func createSendSocketIPv6(addr netip.Addr) (int, error) {
+	fd, err := unix.Socket(unix.AF_INET6, unix.SOCK_RAW, unix.IPPROTO_RAW)
+	if err != nil {
+		return 0, fmt.Errorf("creating socket: %w", err)
+	}
+	if err := unix.SetsockoptInt(fd, unix.IPPROTO_IPV6, unix.IPV6_HDRINCL, 1); err != nil {
+		return 0, fmt.Errorf("setting IPV6_HDRINCL: %w", err)
+	}
+	sa := &unix.SockaddrInet6{Port: 0} // raw sockets don't use ports
+	copy(sa.Addr[:], addr.AsSlice())
 	if err := unix.Bind(fd, sa); err != nil {
 		return 0, fmt.Errorf("binding socket: %w", err)
 	}
@@ -190,10 +217,21 @@ func handleConn(conn *connectip.Conn, addr netip.Addr, route netip.Prefix) error
 				return
 			}
 			log.Printf("read %d bytes from connection", n)
-			dest := ([4]byte)(b[16:20])
-			if err := unix.Sendto(serverSockedSend, b[:n], 0, &unix.SockaddrInet4{Addr: dest}); err != nil {
-				errChan <- fmt.Errorf("failed to write to server socket: %w", err)
-				return
+			switch ipVersion(b) {
+			case 4:
+				dest := ([4]byte)(b[16:20])
+				if err := unix.Sendto(serverSocketSend, b[:n], 0, &unix.SockaddrInet4{Addr: dest}); err != nil {
+					errChan <- fmt.Errorf("failed to write v4 packet to server socket: %w", err)
+					return
+				}
+			case 6:
+				dest := ([16]byte)(b[24:40])
+				if err := unix.Sendto(serverSocketSend, b[:n], 0, &unix.SockaddrInet6{Addr: dest}); err != nil {
+					errChan <- fmt.Errorf("failed to write v6 packet to server socket: %w", err)
+					return
+				}
+			default:
+				log.Printf("unknown IP version: %d", ipVersion(b))
 			}
 		}
 	}()
@@ -220,3 +258,5 @@ func handleConn(conn *connectip.Conn, addr netip.Addr, route netip.Prefix) error
 	<-errChan // wait for the other goroutine to finish
 	return err
 }
+
+func ipVersion(b []byte) uint8 { return b[0] >> 4 }

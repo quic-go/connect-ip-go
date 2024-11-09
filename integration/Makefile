@@ -21,14 +21,23 @@ cleanup:
 	rm server/key.pem server/cert.pem || true
 	rm proxy/key.pem proxy/cert.pem || true
 
-pingtest:
-	TESTCASE=ping docker compose up --exit-code-from client
+ping:
+	TESTCASE=ping docker compose --env-file ipv4.env up --exit-code-from client
 
-httptest:
-	TESTCASE=http docker compose up --exit-code-from client
+pingv6:
+	TESTCASE=ping docker compose --env-file ipv6.env up --exit-code-from client
 
-http3test:
-	TESTCASE=http3 docker compose up --exit-code-from client
+http:
+	TESTCASE=http docker compose --env-file ipv4.env up --exit-code-from client
+
+httpv6:
+	TESTCASE=http docker compose --env-file ipv6.env up --exit-code-from client
+
+http3:
+	TESTCASE=http3 docker compose --env-file ipv4.env up --exit-code-from client
+
+http3v6:
+	TESTCASE=http3 docker compose --env-file ipv6.env up --exit-code-from client
 
 copylogs:
 	mkdir -p $(target)
@@ -38,4 +47,5 @@ copylogs:
 	docker cp server:/server.pcap $(target)/
 	docker cp proxy:/proxy_eth0.pcap $(target)/
 	docker cp proxy:/proxy_eth1.pcap $(target)/
+
 

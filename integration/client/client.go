@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -23,7 +24,11 @@ import (
 )
 
 func main() {
-	proxyAddr := netip.MustParseAddrPort(os.Getenv("PROXY_ADDR"))
+	proxyPort, err := strconv.Atoi(os.Getenv("PROXY_PORT"))
+	if err != nil {
+		log.Fatalf("failed to parse proxy port: %v", err)
+	}
+	proxyAddr := netip.AddrPortFrom(netip.MustParseAddr(os.Getenv("PROXY_ADDR")), uint16(proxyPort))
 	serverAddr, err := netip.ParseAddr(os.Getenv("SERVER_ADDR"))
 	if err != nil {
 		log.Fatalf("failed to parse server URL: %v", err)
@@ -55,7 +60,7 @@ func main() {
 		tr := &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 		}
-		if err := runHTTPTest(tr, fmt.Sprintf("http://%s/hello", serverAddr)); err != nil {
+		if err := runHTTPTest(tr, fmt.Sprintf("http://%s/hello", ipForURL(serverAddr))); err != nil {
 			log.Fatalf("HTTP test failed: %v", err)
 		}
 	case "http3":
@@ -67,7 +72,7 @@ func main() {
 			},
 		}
 		defer tr.Close()
-		if err := runHTTPTest(tr, fmt.Sprintf("https://%s/hello", serverAddr)); err != nil {
+		if err := runHTTPTest(tr, fmt.Sprintf("https://%s/hello", ipForURL(serverAddr))); err != nil {
 			log.Fatalf("HTTP/3 test failed: %v", err)
 		}
 	default:
@@ -210,6 +215,13 @@ func proxy(ipconn *connectip.Conn, dev *water.Interface) error {
 	ipconn.Close()
 	<-errChan // wait for the other goroutine to finish
 	return err
+}
+
+func ipForURL(addr netip.Addr) string {
+	if addr.Is4() {
+		return addr.String()
+	}
+	return fmt.Sprintf("[%s]", addr)
 }
 
 func prefixToIPNet(prefix netip.Prefix) *net.IPNet {
