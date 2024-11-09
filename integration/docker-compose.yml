@@ -10,6 +10,7 @@ services:
       - ASSIGN_ADDR=${CLIENT_ASSIGN_IP} # address to assign to the client
       - ROUTE=${ROUTE_SUBNET} # route advertised to the client (into the server's subnet)
       - QUIC_GO_DISABLE_RECEIVE_BUFFER_WARNING=true
+      - QUIC_GO_DISABLE_GSO=true
     cap_add:
       - NET_ADMIN
     devices:
@@ -30,6 +31,7 @@ services:
     environment:
       - TESTCASE=${TESTCASE}
       - QUIC_GO_DISABLE_RECEIVE_BUFFER_WARNING=true
+      - QUIC_GO_DISABLE_GSO=true
       - PROXY_ADDR=${PROXY_NET_IPV4}${PROXY_NET_IPV6}
       - PROXY_PORT=443
       - SERVER_ADDR=${SERVER_NET_IPV4}${SERVER_NET_IPV6}
