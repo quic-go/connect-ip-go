@@ -89,6 +89,22 @@ jobs:
           make target=logs_filtertcpv6 copylogs
           exit $status
 
+      - name: Run file transfer test
+        working-directory: integration
+        if: success() || failure() # run this step even if the previous one failed
+        run: |
+          make filetransfer || status=$?
+          make target=logs_filetransfer copylogs
+          exit $status
+
+      - name: Run file transfertest on IPv6
+        working-directory: integration
+        if: success() || failure() # run this step even if the previous one failed
+        run: |
+          make filetransferv6 || status=$?
+          make target=logs_filetransferv6 copylogs
+          exit $status
+
       - name: Save logs
         uses: actions/upload-artifact@v4
         if: success() || failure() # run this step even if the previous one failed
@@ -103,3 +119,5 @@ jobs:
             integration/logs_http3v6
             integration/logs_filtertcp
             integration/logs_filtertcpv6
+            integration/logs_filetransfer
+            integration/logs_filetransferv6

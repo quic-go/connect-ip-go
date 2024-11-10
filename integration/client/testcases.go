@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"log"
@@ -9,6 +10,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/quic-go/connect-ip-go/integration/internal/utils"
 )
 
 func runPingTest(dst netip.Addr, num int) error {
@@ -70,6 +73,27 @@ func runHTTPTest(rt http.RoundTripper, url string) error {
 	log.Printf("HTTP test: got body %q", string(data))
 	if string(data) != "Hello, World!\n" {
 		return fmt.Errorf("expected body %q, got %q", "Hello, World!\n", string(data))
+	}
+	return nil
+}
+
+func downloadViaHTTPTest(rt http.RoundTripper, url string, n int) error {
+	client := &http.Client{Transport: rt}
+	resp, err := client.Get(url + fmt.Sprintf("%d", n))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("expected status code %d, got %d", http.StatusOK, resp.StatusCode)
+	}
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	log.Printf("HTTP test: got %d bytes", len(data))
+	if !bytes.Equal(data, utils.RandomBytes(n)) {
+		return fmt.Errorf("expected body %q, got %q", utils.RandomBytes(n), data)
 	}
 	return nil
 }

@@ -1,11 +1,11 @@
-package main
+package utils
 
 import (
 	"net"
 	"net/netip"
 )
 
-func lastIP(prefix netip.Prefix) netip.Addr {
+func LastIP(prefix netip.Prefix) netip.Addr {
 	addr := prefix.Addr()
 	bytes := addr.AsSlice()
 
@@ -25,7 +25,7 @@ func lastIP(prefix netip.Prefix) netip.Addr {
 	return netip.AddrFrom16([16]byte(bytes))
 }
 
-func prefixToIPNet(prefix netip.Prefix) *net.IPNet {
+func PrefixToIPNet(prefix netip.Prefix) *net.IPNet {
 	return &net.IPNet{
 		IP:   prefix.Addr().AsSlice(),
 		Mask: net.CIDRMask(prefix.Bits(), prefix.Addr().BitLen()),

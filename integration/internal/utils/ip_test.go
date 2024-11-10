@@ -1,4 +1,4 @@
-package main
+package utils
 
 import (
 	"net/netip"
@@ -36,7 +36,7 @@ func TestLastIP(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.input.String(), func(t *testing.T) {
-			result := lastIP(tt.input)
+			result := LastIP(tt.input)
 			require.Equal(t, tt.expected, result, result.String())
 		})
 	}
@@ -59,7 +59,7 @@ func TestPrefixToIPNet(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ipnet := prefixToIPNet(tt.prefix)
+			ipnet := PrefixToIPNet(tt.prefix)
 			// convert back to prefix for comparison
 			prefix, err := netip.ParsePrefix(ipnet.String())
 			require.NoError(t, err)

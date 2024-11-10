@@ -45,6 +45,12 @@ filtertcp:
 filtertcpv6:
 	FILTER_IP_PROTOCOL=6 TESTCASE=filtertcp docker compose --env-file ipv6.env up --exit-code-from client
 
+filetransfer:
+	FILTER_IP_PROTOCOL=0 TESTCASE=filetransfer docker compose --env-file ipv4.env up --exit-code-from client
+
+filetransferv6:
+	FILTER_IP_PROTOCOL=0 TESTCASE=filetransfer docker compose --env-file ipv6.env up --exit-code-from client
+
 copylogs:
 	mkdir -p $(target)
 	docker compose logs > $(target)/docker-compose.log

@@ -5,6 +5,10 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path"
+	"strconv"
+
+	"github.com/quic-go/connect-ip-go/integration/internal/utils"
 
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
@@ -13,6 +17,15 @@ import (
 func main() {
 	http.HandleFunc("/hello", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "Hello, World!\n")
+	})
+	http.HandleFunc("/data/", func(w http.ResponseWriter, r *http.Request) {
+		number, err := strconv.Atoi(path.Base(r.URL.Path))
+		if err != nil {
+			http.Error(w, "invalid number", http.StatusBadRequest)
+			return
+		}
+
+		w.Write(utils.RandomBytes(number))
 	})
 
 	go func() {

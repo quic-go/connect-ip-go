@@ -38,6 +38,11 @@ const (
 	ipProtoICMPv6 = 58
 )
 
+// If a packet is too large to fit into a QUIC datagram,
+// we send an ICMP Packet Too Big packet.
+// On IPv6, the minimum MTU of a link is 1280 bytes.
+const minMTU = 1280
+
 // Conn is a connection that proxies IP packets over HTTP/3.
 type Conn struct {
 	str    http3.Stream
@@ -334,6 +339,12 @@ func (c *Conn) handleIncomingProxiedPacket(data []byte) error {
 	return nil
 }
 
+type PacketTooBigError struct {
+	ICMPPacket []byte
+}
+
+func (e *PacketTooBigError) Error() string { return "connect-ip: packet too big" }
+
 func (c *Conn) Write(b []byte) (n int, err error) {
 	data, err := c.composeDatagram(b)
 	if err != nil {
@@ -341,7 +352,13 @@ func (c *Conn) Write(b []byte) (n int, err error) {
 		return 0, nil
 	}
 	if err := c.str.SendDatagram(data); err != nil {
-		fmt.Println("send datagram error", err)
+		if errors.Is(err, &quic.DatagramTooLargeError{}) {
+			icmpPacket, err := composeICMPTooLargePacket(b, minMTU)
+			if err != nil {
+				log.Printf("failed to compose ICMP too large packet: %s", err)
+			}
+			return 0, &PacketTooBigError{ICMPPacket: icmpPacket}
+		}
 		select {
 		case <-c.closeChan:
 			return 0, c.closeErr
