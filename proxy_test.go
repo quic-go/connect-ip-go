@@ -159,8 +159,9 @@ func TestTTLs(t *testing.T) {
 		}
 		packetTTL1, err := hdrTTL1.Marshal()
 		require.NoError(t, err)
-		_, err = client.Write(packetTTL1)
+		icmp, err := client.WritePacket(packetTTL1)
 		require.NoError(t, err)
+		require.Empty(t, icmp)
 
 		// now send a packet with TTL 42
 		hdr := &ipv4.Header{
@@ -171,11 +172,12 @@ func TestTTLs(t *testing.T) {
 		}
 		packet, err := hdr.Marshal()
 		require.NoError(t, err)
-		_, err = client.Write(packet)
+		icmp, err = client.WritePacket(packet)
 		require.NoError(t, err)
+		require.Empty(t, icmp)
 
 		receivedPacket := make([]byte, 1500)
-		n, err := server.Read(receivedPacket)
+		n, err := server.ReadPacket(receivedPacket)
 		require.NoError(t, err)
 		receivedPacket = receivedPacket[:n]
 
@@ -204,8 +206,9 @@ func TestTTLs(t *testing.T) {
 			0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, // Source IP
 			0x20, 0x01, 0x48, 0x60, 0x48, 0x60, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x88, 0x88, // Destination IP
 		}
-		_, err := client.Write(packetHopLimit1)
+		icmp, err := client.WritePacket(packetHopLimit1)
 		require.NoError(t, err)
+		require.Empty(t, icmp)
 
 		// now send a packet with Hop Limit 42
 		packet := []byte{
@@ -215,11 +218,12 @@ func TestTTLs(t *testing.T) {
 			0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, // Source IP
 			0x20, 0x01, 0x48, 0x60, 0x48, 0x60, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x88, 0x88, // Destination IP
 		}
-		_, err = client.Write(packet)
+		icmp, err = client.WritePacket(packet)
 		require.NoError(t, err)
+		require.Empty(t, icmp)
 
 		receivedPacket := make([]byte, 1500)
-		n, err := server.Read(receivedPacket)
+		n, err := server.ReadPacket(receivedPacket)
 		require.NoError(t, err)
 		receivedPacket = receivedPacket[:n]
 
@@ -269,9 +273,9 @@ func TestClosing(t *testing.T) {
 		}),
 		net.ErrClosed,
 	)
-	_, err = client.Read([]byte{0})
+	_, err = client.ReadPacket([]byte{0})
 	require.ErrorIs(t, err, net.ErrClosed)
-	_, err = client.Write(ipv6Packet)
+	_, err = client.WritePacket(ipv6Packet)
 	require.ErrorIs(t, err, net.ErrClosed)
 
 	select {
@@ -288,8 +292,8 @@ func TestClosing(t *testing.T) {
 		t.Fatal("timeout")
 	}
 
-	_, err = server.Read([]byte{0})
+	_, err = server.ReadPacket([]byte{0})
 	require.ErrorIs(t, err, net.ErrClosed)
-	_, err = server.Write(ipv6Packet)
+	_, err = server.WritePacket(ipv6Packet)
 	require.ErrorIs(t, err, net.ErrClosed)
 }

@@ -275,8 +275,7 @@ func TestSendLargeDatagrams(t *testing.T) {
 		Protocol: 17,
 	}).Marshal()
 	require.NoError(t, err)
-	_, err = conn.Write(data)
-	var pktTooBigErr *PacketTooBigError
-	require.ErrorAs(t, err, &pktTooBigErr)
-	require.NotNil(t, pktTooBigErr.ICMPPacket)
+	icmp, err := conn.WritePacket(data)
+	require.NoError(t, err)
+	require.NotNil(t, icmp)
 }

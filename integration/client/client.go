@@ -204,7 +204,7 @@ func proxy(ipconn *connectip.Conn, dev *water.Interface) error {
 	go func() {
 		for {
 			b := make([]byte, 1500)
-			n, err := ipconn.Read(b)
+			n, err := ipconn.ReadPacket(b)
 			if err != nil {
 				errChan <- fmt.Errorf("failed to read from connection: %w", err)
 				return
@@ -226,18 +226,16 @@ func proxy(ipconn *connectip.Conn, dev *water.Interface) error {
 				return
 			}
 			log.Printf("read %d bytes from TUN", n)
-			if _, err := ipconn.Write(b[:n]); err != nil {
-				var tooBigErr *connectip.PacketTooBigError
-				if errors.As(err, &tooBigErr) {
-					if len(tooBigErr.ICMPPacket) > 0 {
-						if _, err := dev.Write(tooBigErr.ICMPPacket); err != nil {
-							log.Printf("faield to write ICMP packet to %s: %v", dev.Name(), err)
-						}
-					}
-					continue
-				}
+			icmp, err := ipconn.WritePacket(b[:n])
+			if err != nil {
 				errChan <- fmt.Errorf("failed to write to connection: %w", err)
 				return
+			}
+			if len(icmp) > 0 {
+				log.Printf("sending ICMP packet on %s", dev.Name())
+				if _, err := dev.Write(icmp); err != nil {
+					log.Printf("failed to write ICMP packet: %v", err)
+				}
 			}
 		}
 	}()
