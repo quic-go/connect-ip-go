@@ -4,6 +4,7 @@ jobs:
   check:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         module: [".", "./integration"]
     name: Lint (${{ matrix.module }})
