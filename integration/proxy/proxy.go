@@ -5,7 +5,6 @@ package main
 import (
 	"context"
 	"crypto/tls"
-	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -217,7 +216,7 @@ func handleConn(conn *connectip.Conn, addr netip.Addr, route netip.Prefix, ipPro
 	go func() {
 		for {
 			b := make([]byte, 1500)
-			n, err := conn.Read(b)
+			n, err := conn.ReadPacket(b)
 			if err != nil {
 				errChan <- fmt.Errorf("failed to read from connection: %w", err)
 				return
@@ -239,20 +238,15 @@ func handleConn(conn *connectip.Conn, addr netip.Addr, route netip.Prefix, ipPro
 				return
 			}
 			log.Printf("read %d bytes from %s", n, ifaceName)
-			if _, err := conn.Write(b[:n]); err != nil {
-				var tooBigErr *connectip.PacketTooBigError
-				if errors.As(err, &tooBigErr) {
-					if len(tooBigErr.ICMPPacket) > 0 {
-						if err := sendOnSocket(serverSocketSend, tooBigErr.ICMPPacket); err != nil {
-							errChan <- fmt.Errorf("writing to server socket: %w", err)
-							return
-						}
-					}
-					continue
-				}
-
+			icmp, err := conn.WritePacket(b[:n])
+			if err != nil {
 				errChan <- fmt.Errorf("failed to write to connection: %w", err)
 				return
+			}
+			if len(icmp) > 0 {
+				if err := sendOnSocket(serverSocketSend, icmp); err != nil {
+					log.Printf("failed to send ICMP packet: %v", err)
+				}
 			}
 		}
 	}()

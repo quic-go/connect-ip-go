@@ -243,7 +243,7 @@ func (c *Conn) writeToStream() error {
 	}
 }
 
-func (c *Conn) Read(b []byte) (n int, err error) {
+func (c *Conn) ReadPacket(b []byte) (n int, err error) {
 start:
 	data, err := c.str.ReceiveDatagram(context.Background())
 	if err != nil {
@@ -339,17 +339,14 @@ func (c *Conn) handleIncomingProxiedPacket(data []byte) error {
 	return nil
 }
 
-type PacketTooBigError struct {
-	ICMPPacket []byte
-}
-
-func (e *PacketTooBigError) Error() string { return "connect-ip: packet too big" }
-
-func (c *Conn) Write(b []byte) (n int, err error) {
+// WritePacket writes an IP packet to the stream.
+// If sending the packet fails, it might return an ICMP packet.
+// It is the caller's responsibility to send the ICMP packet to the sender.
+func (c *Conn) WritePacket(b []byte) (icmp []byte, err error) {
 	data, err := c.composeDatagram(b)
 	if err != nil {
 		log.Printf("dropping proxied packet (%d bytes) that can't be proxied: %s", len(b), err)
-		return 0, nil
+		return nil, nil
 	}
 	if err := c.str.SendDatagram(data); err != nil {
 		if errors.Is(err, &quic.DatagramTooLargeError{}) {
@@ -357,16 +354,16 @@ func (c *Conn) Write(b []byte) (n int, err error) {
 			if err != nil {
 				log.Printf("failed to compose ICMP too large packet: %s", err)
 			}
-			return 0, &PacketTooBigError{ICMPPacket: icmpPacket}
+			return icmpPacket, nil
 		}
 		select {
 		case <-c.closeChan:
-			return 0, c.closeErr
+			return nil, c.closeErr
 		default:
-			return 0, err
+			return nil, err
 		}
 	}
-	return len(b), nil
+	return nil, nil
 }
 
 func (c *Conn) composeDatagram(b []byte) ([]byte, error) {
