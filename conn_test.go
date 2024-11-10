@@ -24,8 +24,9 @@ var ipv6Header = []byte{
 }
 
 type mockStream struct {
-	reading []byte
-	toRead  <-chan []byte
+	reading         []byte
+	toRead          <-chan []byte
+	sendDatagramErr error
 }
 
 var _ http3.Stream = &mockStream{}
@@ -47,7 +48,7 @@ func (m *mockStream) Context() context.Context          { return context.Backgro
 func (m *mockStream) SetWriteDeadline(time.Time) error  { return nil }
 func (m *mockStream) SetReadDeadline(time.Time) error   { return nil }
 func (m *mockStream) SetDeadline(time.Time) error       { return nil }
-func (m *mockStream) SendDatagram(data []byte) error    { return nil }
+func (m *mockStream) SendDatagram(data []byte) error    { return m.sendDatagramErr }
 func (m *mockStream) ReceiveDatagram(ctx context.Context) ([]byte, error) {
 	<-ctx.Done()
 	return nil, ctx.Err()
@@ -260,4 +261,22 @@ func TestSendingDatagrams(t *testing.T) {
 		_, err := conn.composeDatagram(ipv6Header[:ipv6.HeaderLen-1])
 		require.ErrorContains(t, err, "connect-ip: IPv6 packet too short")
 	})
+}
+
+func TestSendLargeDatagrams(t *testing.T) {
+	str := &mockStream{sendDatagramErr: &quic.DatagramTooLargeError{}}
+	conn := newProxiedConn(str)
+	data, err := (&ipv4.Header{
+		Version:  4,
+		Len:      20,
+		TTL:      64,
+		Src:      net.IPv4(1, 2, 3, 4),
+		Dst:      net.IPv4(5, 6, 7, 8),
+		Protocol: 17,
+	}).Marshal()
+	require.NoError(t, err)
+	_, err = conn.Write(data)
+	var pktTooBigErr *PacketTooBigError
+	require.ErrorAs(t, err, &pktTooBigErr)
+	require.NotNil(t, pktTooBigErr.ICMPPacket)
 }

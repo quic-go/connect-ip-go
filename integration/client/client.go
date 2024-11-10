@@ -17,6 +17,8 @@ import (
 	"time"
 
 	connectip "github.com/quic-go/connect-ip-go"
+	"github.com/quic-go/connect-ip-go/integration/internal/utils"
+
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 	"github.com/songgao/water"
@@ -96,6 +98,10 @@ func main() {
 		if err == nil || !errors.Is(err, &quic.IdleTimeoutError{}) {
 			log.Fatalf("HTTP/3 test should have resulted in a timeout error, but got: %v", err)
 		}
+	case "filetransfer":
+		if err := downloadViaHTTPTest(http.DefaultTransport, fmt.Sprintf("http://%s/data/", ipForURL(serverAddr)), 1<<20); err != nil {
+			log.Fatalf("HTTP test failed: %v", err)
+		}
 	default:
 		log.Fatalf("unknown testcase: %s", os.Getenv("TESTCASE"))
 	}
@@ -169,12 +175,9 @@ func establishConn(proxyAddr netip.AddrPort, keyLog io.Writer) (*water.Interface
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to get TUN interface: %w", err)
 	}
-	if err := netlink.LinkSetMTU(link, 1280); err != nil {
-		return nil, nil, fmt.Errorf("failed to set MTU: %w", err)
-	}
-	for _, prefix := range localPrefixes {
-		if err := netlink.AddrAdd(link, &netlink.Addr{IPNet: prefixToIPNet(prefix)}); err != nil {
-			return nil, nil, fmt.Errorf("failed to add address assigned by peer %s: %w", prefix, err)
+	for _, p := range localPrefixes {
+		if err := netlink.AddrAdd(link, &netlink.Addr{IPNet: utils.PrefixToIPNet(p)}); err != nil {
+			return nil, nil, fmt.Errorf("failed to add address assigned by peer %s: %w", p, err)
 		}
 	}
 	if err := netlink.LinkSetUp(link); err != nil {
@@ -186,7 +189,7 @@ func establishConn(proxyAddr netip.AddrPort, keyLog io.Writer) (*water.Interface
 		for _, prefix := range route.Prefixes() {
 			r := &netlink.Route{
 				LinkIndex: link.Attrs().Index,
-				Dst:       prefixToIPNet(prefix),
+				Dst:       utils.PrefixToIPNet(prefix),
 			}
 			if err := netlink.RouteAdd(r); err != nil {
 				return nil, nil, fmt.Errorf("failed to add route: %w", err)
@@ -224,6 +227,15 @@ func proxy(ipconn *connectip.Conn, dev *water.Interface) error {
 			}
 			log.Printf("read %d bytes from TUN", n)
 			if _, err := ipconn.Write(b[:n]); err != nil {
+				var tooBigErr *connectip.PacketTooBigError
+				if errors.As(err, &tooBigErr) {
+					if len(tooBigErr.ICMPPacket) > 0 {
+						if _, err := dev.Write(tooBigErr.ICMPPacket); err != nil {
+							log.Printf("faield to write ICMP packet to %s: %v", dev.Name(), err)
+						}
+					}
+					continue
+				}
 				errChan <- fmt.Errorf("failed to write to connection: %w", err)
 				return
 			}
@@ -243,11 +255,4 @@ func ipForURL(addr netip.Addr) string {
 		return addr.String()
 	}
 	return fmt.Sprintf("[%s]", addr)
-}
-
-func prefixToIPNet(prefix netip.Prefix) *net.IPNet {
-	return &net.IPNet{
-		IP:   prefix.Addr().AsSlice(),
-		Mask: net.CIDRMask(prefix.Bits(), prefix.Addr().BitLen()),
-	}
 }

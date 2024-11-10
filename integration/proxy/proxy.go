@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -18,6 +19,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	connectip "github.com/quic-go/connect-ip-go"
+	"github.com/quic-go/connect-ip-go/integration/internal/utils"
 
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
@@ -206,7 +208,7 @@ func handleConn(conn *connectip.Conn, addr netip.Addr, route netip.Prefix, ipPro
 		return fmt.Errorf("failed to assign addresses: %w", err)
 	}
 	if err := conn.AdvertiseRoute(ctx, []connectip.IPRoute{
-		{StartIP: route.Addr(), EndIP: lastIP(route), IPProtocol: ipProtocol},
+		{StartIP: route.Addr(), EndIP: utils.LastIP(route), IPProtocol: ipProtocol},
 	}); err != nil {
 		return fmt.Errorf("failed to advertise route: %w", err)
 	}
@@ -221,21 +223,9 @@ func handleConn(conn *connectip.Conn, addr netip.Addr, route netip.Prefix, ipPro
 				return
 			}
 			log.Printf("read %d bytes from connection", n)
-			switch ipVersion(b) {
-			case 4:
-				dest := ([4]byte)(b[16:20])
-				if err := unix.Sendto(serverSocketSend, b[:n], 0, &unix.SockaddrInet4{Addr: dest}); err != nil {
-					errChan <- fmt.Errorf("failed to write v4 packet to server socket: %w", err)
-					return
-				}
-			case 6:
-				dest := ([16]byte)(b[24:40])
-				if err := unix.Sendto(serverSocketSend, b[:n], 0, &unix.SockaddrInet6{Addr: dest}); err != nil {
-					errChan <- fmt.Errorf("failed to write v6 packet to server socket: %w", err)
-					return
-				}
-			default:
-				log.Printf("unknown IP version: %d", ipVersion(b))
+			if err := sendOnSocket(serverSocketSend, b[:n]); err != nil {
+				errChan <- fmt.Errorf("writing to server socket: %w", err)
+				return
 			}
 		}
 	}()
@@ -250,6 +240,17 @@ func handleConn(conn *connectip.Conn, addr netip.Addr, route netip.Prefix, ipPro
 			}
 			log.Printf("read %d bytes from %s", n, ifaceName)
 			if _, err := conn.Write(b[:n]); err != nil {
+				var tooBigErr *connectip.PacketTooBigError
+				if errors.As(err, &tooBigErr) {
+					if len(tooBigErr.ICMPPacket) > 0 {
+						if err := sendOnSocket(serverSocketSend, tooBigErr.ICMPPacket); err != nil {
+							errChan <- fmt.Errorf("writing to server socket: %w", err)
+							return
+						}
+					}
+					continue
+				}
+
 				errChan <- fmt.Errorf("failed to write to connection: %w", err)
 				return
 			}
@@ -262,5 +263,3 @@ func handleConn(conn *connectip.Conn, addr netip.Addr, route netip.Prefix, ipPro
 	<-errChan // wait for the other goroutine to finish
 	return err
 }
-
-func ipVersion(b []byte) uint8 { return b[0] >> 4 }
