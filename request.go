@@ -8,13 +8,11 @@ import (
 	"reflect"
 
 	"github.com/dunglas/httpsfv"
+	"github.com/quic-go/quic-go/http3"
 	"github.com/yosida95/uritemplate/v3"
 )
 
-const (
-	requestProtocol = "connect-ip"
-	capsuleHeader   = "Capsule-Protocol"
-)
+const requestProtocol = "connect-ip"
 
 var capsuleProtocolHeaderValue string
 
@@ -70,7 +68,7 @@ func ParseRequest(r *http.Request, template *uritemplate.Template) (*Request, er
 			Err:        fmt.Errorf("host in :authority (%s) does not match template host (%s)", r.Host, u.Host),
 		}
 	}
-	capsuleHeaderValues, ok := r.Header[capsuleHeader]
+	capsuleHeaderValues, ok := r.Header[http3.CapsuleProtocolHeader]
 	if !ok {
 		return nil, &RequestParseError{
 			HTTPStatus: http.StatusBadRequest,

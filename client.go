@@ -45,7 +45,7 @@ func Dial(ctx context.Context, conn *http3.ClientConn, template *uritemplate.Tem
 		Method: http.MethodConnect,
 		Proto:  requestProtocol,
 		Host:   u.Host,
-		Header: http.Header{capsuleHeader: []string{capsuleProtocolHeaderValue}},
+		Header: http.Header{http3.CapsuleProtocolHeader: []string{capsuleProtocolHeaderValue}},
 		URL:    u,
 	}); err != nil {
 		return nil, nil, fmt.Errorf("connect-ip: failed to send request: %w", err)
