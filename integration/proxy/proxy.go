@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -175,6 +176,11 @@ func run(bindTo netip.AddrPort, remoteAddr netip.Addr, route netip.Prefix, ipPro
 	mux.HandleFunc("/vpn", func(w http.ResponseWriter, r *http.Request) {
 		req, err := connectip.ParseRequest(r, template)
 		if err != nil {
+			var perr *connectip.RequestParseError
+			if errors.As(err, &perr) {
+				w.WriteHeader(perr.HTTPStatus)
+				return
+			}
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}

@@ -38,6 +38,8 @@ type RequestParseError struct {
 func (e *RequestParseError) Error() string { return e.Err.Error() }
 func (e *RequestParseError) Unwrap() error { return e.Err }
 
+// ParseRequest parses a CONNECT-IP request.
+// The template is the URI template that clients will use to configure this proxy.
 func ParseRequest(r *http.Request, template *uritemplate.Template) (*Request, error) {
 	if len(template.Varnames()) > 0 {
 		return nil, errors.New("connect-ip-go currently does not support IP flow forwarding")
