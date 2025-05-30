@@ -43,9 +43,15 @@ const (
 // On IPv6, the minimum MTU of a link is 1280 bytes.
 const minMTU = 1280
 
+type datagramStream interface {
+	quic.Stream
+	SendDatagram(b []byte) error
+	ReceiveDatagram(ctx context.Context) ([]byte, error)
+}
+
 // Conn is a connection that proxies IP packets over HTTP/3.
 type Conn struct {
-	str    http3.Stream
+	str    datagramStream
 	writes chan writeCapsule
 
 	assignedAddressNotify chan struct{}
@@ -61,7 +67,7 @@ type Conn struct {
 	closeErr  error
 }
 
-func newProxiedConn(str http3.Stream) *Conn {
+func newProxiedConn(str datagramStream) *Conn {
 	c := &Conn{
 		str:                   str,
 		writes:                make(chan writeCapsule),

@@ -58,5 +58,5 @@ func Dial(ctx context.Context, conn *http3.ClientConn, template *uritemplate.Tem
 	if rsp.StatusCode < 200 || rsp.StatusCode > 299 {
 		return nil, rsp, fmt.Errorf("connect-ip: server responded with %d", rsp.StatusCode)
 	}
-	return newProxiedConn(rstr), rsp, nil
+	return newProxiedConn(rstr.Stream), rsp, nil
 }

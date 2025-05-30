@@ -11,7 +11,6 @@ import (
 	"golang.org/x/net/ipv6"
 
 	"github.com/quic-go/quic-go"
-	"github.com/quic-go/quic-go/http3"
 
 	"github.com/stretchr/testify/require"
 )
@@ -29,7 +28,7 @@ type mockStream struct {
 	sendDatagramErr error
 }
 
-var _ http3.Stream = &mockStream{}
+var _ datagramStream = &mockStream{}
 
 func (m *mockStream) StreamID() quic.StreamID { panic("implement me") }
 func (m *mockStream) Read(p []byte) (int, error) {
