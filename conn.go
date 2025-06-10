@@ -349,7 +349,7 @@ func (c *Conn) WritePacket(b []byte) (icmp []byte, err error) {
 		return nil, nil
 	}
 	if err := c.str.SendDatagram(data); err != nil {
-		if errors.Is(err, &quic.DatagramTooLargeError{}) {
+		if errors.As(err, &quic.DatagramTooLargeError{}) {
 			icmpPacket, err := composeICMPTooLargePacket(b, minMTU)
 			if err != nil {
 				log.Printf("failed to compose ICMP too large packet: %s", err)

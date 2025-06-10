@@ -3,3 +3,5 @@ integration/server/server
 integration/proxy/proxy
 integration/proxy/*.pem
 logs/
+.DS_Store
+.idea/
