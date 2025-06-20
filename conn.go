@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/netip"
@@ -44,7 +45,10 @@ const (
 const minMTU = 1280
 
 type datagramStream interface {
-	quic.Stream
+	io.ReadWriteCloser
+
+	CancelRead(quic.StreamErrorCode)
+
 	SendDatagram(b []byte) error
 	ReceiveDatagram(ctx context.Context) ([]byte, error)
 }
