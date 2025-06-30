@@ -2,8 +2,12 @@
 
 set -e
 
+# The proxy is set up with two Docker networks.
+# This creates two network interfaces, eth0 and eth1.
+# However, the setup is not deterministic:
+# We don't know which interface will be assigned to which network.
+# We therefore need to determine which interface is facing the client, and which one the server.
 SERVER_INTERFACE="eth1"
-
 if [ -n "$GATEWAY_IPV4" ] && ip addr show eth0 | grep 'inet ' | awk '{print $2}' | cut -d/ -f1 | grep -q "$GATEWAY_IPV4"; then
   SERVER_INTERFACE="eth0"
 fi
