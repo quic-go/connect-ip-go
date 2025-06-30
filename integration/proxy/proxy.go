@@ -28,7 +28,7 @@ import (
 
 var serverSocketRcv, serverSocketSend int
 
-const ifaceName = "eth1"
+var ifaceName = os.Getenv("SERVER_INTERFACE")
 
 func main() {
 	proxyPort, err := strconv.Atoi(os.Getenv("PROXY_PORT"))
@@ -57,11 +57,18 @@ func main() {
 		log.Fatalf("failed to get addresses for %s: %v", ifaceName, err)
 	}
 	if len(addrs) == 0 {
-		log.Fatalf("no IPv4 addresses found for %s", ifaceName)
+		log.Fatalf("no IP addresses found for %s", ifaceName)
 	}
-	ethAddr, ok := netip.AddrFromSlice(addrs[0].IP)
-	if !ok {
-		log.Fatalf("failed to parse %s address", ifaceName)
+	var ethAddr netip.Addr
+	for _, addr := range addrs {
+		a, ok := netip.AddrFromSlice(addr.IP)
+		if !ok {
+			log.Fatalf("failed to parse %s address", ifaceName)
+		}
+		if !a.IsLinkLocalUnicast() {
+			ethAddr = a
+			break
+		}
 	}
 
 	fdRcv, err := createReceiveSocket(ethAddr)
@@ -122,7 +129,7 @@ func createSendSocketIPv4(addr netip.Addr) (int, error) {
 	sa := &unix.SockaddrInet4{Port: 0} // raw sockets don't use ports
 	copy(sa.Addr[:], addr.AsSlice())
 	if err := unix.Bind(fd, sa); err != nil {
-		return 0, fmt.Errorf("binding socket: %w", err)
+		return 0, fmt.Errorf("binding socket to %s: %w", addr, err)
 	}
 	return fd, nil
 }
