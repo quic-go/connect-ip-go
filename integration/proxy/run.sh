@@ -8,7 +8,7 @@ set -e
 # We don't know which interface will be assigned to which network.
 # We therefore swap eth0 and eth1 such that eth0 is the interface facing the client,
 # and eth1 is the interface facing the server.
-if [ "$(ip addr show eth1 | grep 'inet ' | awk '{print $2}' | cut -d/ -f1)" = "$SERVER_NET_IPV4" ]; then
+swap_interfaces() {
   echo "swapping eth0 and eth1"
   ip link set eth0 down
   ip link set eth1 down
@@ -17,6 +17,13 @@ if [ "$(ip addr show eth1 | grep 'inet ' | awk '{print $2}' | cut -d/ -f1)" = "$
   ip link set eth_temp name eth1
   ip link set eth0 up
   ip link set eth1 up
+}
+
+if [ -n "$SERVER_NET_IPV4" ] && [ "$(ip addr show eth1 | grep 'inet ' | awk '{print $2}' | cut -d/ -f1)" = "$SERVER_NET_IPV4" ]; then
+  swap_interfaces
+fi
+if [ -n "$SERVER_NET_IPV6" ] && [ "$(ip addr show eth1 | grep 'inet6 ' | awk '{print $2}' | cut -d/ -f1)" = "$SERVER_NET_IPV6" ]; then
+  swap_interfaces
 fi
 
 echo "eth0:"
