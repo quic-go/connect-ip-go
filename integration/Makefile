@@ -56,7 +56,7 @@ filetransferv6: clean-containers
 
 copylogs:
 	if [ -z "$(target)" ]; then echo "target directory not specified"; exit 1; fi
-	rm -rf $(target) || true
+	rm -rf $(target)
 	mkdir -p $(target)
 	docker compose logs > $(target)/docker-compose.log
 	docker cp client:/keys.txt $(target)/
