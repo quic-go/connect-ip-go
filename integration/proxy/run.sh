@@ -19,13 +19,13 @@ swap_interfaces() {
   ip link set eth1 up
 }
 
-echo "SERVER_NET_IPV4: $SERVER_NET_IPV4"
-echo "SERVER_NET_IPV6: $SERVER_NET_IPV6"
+echo "GATEWAY_IPV4: $GATEWAY_IPV4"
+echo "GATEWAY_IPV6: $GATEWAY_IPV6"
 
-if [ -n "$SERVER_NET_IPV4" ] && [ "$(ip addr show eth1 | grep 'inet ' | awk '{print $2}' | cut -d/ -f1)" = "$SERVER_NET_IPV4" ]; then
+if [ -n "$GATEWAY_IPV4" ] && [ "$(ip addr show eth1 | grep 'inet ' | awk '{print $2}' | cut -d/ -f1)" = "$GATEWAY_IPV4" ]; then
   swap_interfaces
 fi
-if [ -n "$SERVER_NET_IPV6" ] && [ "$(ip addr show eth1 | grep 'inet6 ' | awk '{print $2}' | cut -d/ -f1)" = "$SERVER_NET_IPV6" ]; then
+if [ -n "$GATEWAY_IPV6" ] && [ "$(ip addr show eth1 | grep 'inet6 ' | awk '{print $2}' | cut -d/ -f1)" = "$GATEWAY_IPV6" ]; then
   swap_interfaces
 fi
 
