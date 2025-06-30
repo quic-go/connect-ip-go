@@ -10,6 +10,8 @@ services:
       - ASSIGN_ADDR=${CLIENT_ASSIGN_IP} # address to assign to the client
       - ROUTE=${ROUTE_SUBNET} # route advertised to the client (into the server's subnet)
       - FILTER_IP_PROTOCOL=${FILTER_IP_PROTOCOL}
+      - GATEWAY_IPV4=${GATEWAY_IPV4}
+      - GATEWAY_IPV6=${GATEWAY_IPV6}
       - QUIC_GO_DISABLE_RECEIVE_BUFFER_WARNING=true
       - QUIC_GO_DISABLE_GSO=true
     cap_add:
