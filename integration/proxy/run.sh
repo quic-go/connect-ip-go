@@ -19,6 +19,9 @@ swap_interfaces() {
   ip link set eth1 up
 }
 
+echo "SERVER_NET_IPV4: $SERVER_NET_IPV4"
+echo "SERVER_NET_IPV6: $SERVER_NET_IPV6"
+
 if [ -n "$SERVER_NET_IPV4" ] && [ "$(ip addr show eth1 | grep 'inet ' | awk '{print $2}' | cut -d/ -f1)" = "$SERVER_NET_IPV4" ]; then
   swap_interfaces
 fi
