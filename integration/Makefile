@@ -21,37 +21,42 @@ cleanup:
 	rm server/key.pem server/cert.pem || true
 	rm proxy/key.pem proxy/cert.pem || true
 
-ping:
+clean-containers:
+	docker compose rm -f client proxy server
+
+ping: clean-containers
 	FILTER_IP_PROTOCOL=0 TESTCASE=ping docker compose --env-file ipv4.env up --exit-code-from client
 
-pingv6:
+pingv6: clean-containers
 	FILTER_IP_PROTOCOL=0 TESTCASE=ping docker compose --env-file ipv6.env up --exit-code-from client
 
-http:
+http: clean-containers
 	FILTER_IP_PROTOCOL=0 TESTCASE=http docker compose --env-file ipv4.env up --exit-code-from client
 
-httpv6:
+httpv6: clean-containers
 	FILTER_IP_PROTOCOL=0 TESTCASE=http docker compose --env-file ipv6.env up --exit-code-from client
 
-http3:
+http3: clean-containers
 	FILTER_IP_PROTOCOL=0 TESTCASE=http3 docker compose --env-file ipv4.env up --exit-code-from client
 
-http3v6:
+http3v6: clean-containers
 	FILTER_IP_PROTOCOL=0 TESTCASE=http3 docker compose --env-file ipv6.env up --exit-code-from client
 
-filtertcp:
+filtertcp: clean-containers
 	FILTER_IP_PROTOCOL=6 TESTCASE=filtertcp docker compose --env-file ipv4.env up --exit-code-from client
 
-filtertcpv6:
+filtertcpv6: clean-containers
 	FILTER_IP_PROTOCOL=6 TESTCASE=filtertcp docker compose --env-file ipv6.env up --exit-code-from client
 
-filetransfer:
+filetransfer: clean-containers
 	FILTER_IP_PROTOCOL=0 TESTCASE=filetransfer docker compose --env-file ipv4.env up --exit-code-from client
 
-filetransferv6:
+filetransferv6: clean-containers
 	FILTER_IP_PROTOCOL=0 TESTCASE=filetransfer docker compose --env-file ipv6.env up --exit-code-from client
 
 copylogs:
+	if [ -z "$(target)" ]; then echo "target directory not specified"; exit 1; fi
+	rm -rf $(target) || true
 	mkdir -p $(target)
 	docker compose logs > $(target)/docker-compose.log
 	docker cp client:/keys.txt $(target)/
@@ -59,5 +64,4 @@ copylogs:
 	docker cp server:/server.pcap $(target)/
 	docker cp proxy:/proxy_eth0.pcap $(target)/
 	docker cp proxy:/proxy_eth1.pcap $(target)/
-
 
