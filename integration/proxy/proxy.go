@@ -90,7 +90,7 @@ func createReceiveSocket(a netip.Addr) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("creating socket: %w", err)
 	}
-	iface, err := net.InterfaceByName("eth1")
+	iface, err := net.InterfaceByName(ifaceName)
 	if err != nil {
 		return 0, fmt.Errorf("interface lookup failed: %w", err)
 	}
@@ -138,7 +138,7 @@ func createSendSocketIPv6(addr netip.Addr) (int, error) {
 	sa := &unix.SockaddrInet6{Port: 0} // raw sockets don't use ports
 	copy(sa.Addr[:], addr.AsSlice())
 	if err := unix.Bind(fd, sa); err != nil {
-		return 0, fmt.Errorf("binding socket: %w", err)
+		return 0, fmt.Errorf("binding socket to %s: %w", addr, err)
 	}
 	return fd, nil
 }
