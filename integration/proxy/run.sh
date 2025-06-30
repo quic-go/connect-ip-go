@@ -22,6 +22,9 @@ swap_interfaces() {
 echo "GATEWAY_IPV4: $GATEWAY_IPV4"
 echo "GATEWAY_IPV6: $GATEWAY_IPV6"
 
+echo "inet eth0: $(ip addr show eth0 | grep 'inet ' | awk '{print $2}' | cut -d/ -f1)"
+echo "inet6 eth0: $(ip addr show eth0 | grep 'inet6 ' | awk '{print $2}' | cut -d/ -f1)"
+
 if [ -n "$GATEWAY_IPV4" ] && [ "$(ip addr show eth0 | grep 'inet ' | awk '{print $2}' | cut -d/ -f1)" = "$GATEWAY_IPV4" ]; then
   swap_interfaces
 fi
