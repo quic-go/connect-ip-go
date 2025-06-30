@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/netip"
@@ -38,6 +39,18 @@ const (
 	ipProtoICMPv6 = 58
 )
 
+type http3Stream interface {
+	io.ReadWriteCloser
+	ReceiveDatagram(context.Context) ([]byte, error)
+	SendDatagram([]byte) error
+	CancelRead(quic.StreamErrorCode)
+}
+
+var (
+	_ http3Stream = &http3.Stream{}
+	_ http3Stream = &http3.RequestStream{}
+)
+
 // If a packet is too large to fit into a QUIC datagram,
 // we send an ICMP Packet Too Big packet.
 // On IPv6, the minimum MTU of a link is 1280 bytes.
@@ -45,7 +58,7 @@ const minMTU = 1280
 
 // Conn is a connection that proxies IP packets over HTTP/3.
 type Conn struct {
-	str    http3.Stream
+	str    http3Stream
 	writes chan writeCapsule
 
 	assignedAddressNotify chan struct{}
@@ -61,7 +74,7 @@ type Conn struct {
 	closeErr  error
 }
 
-func newProxiedConn(str http3.Stream) *Conn {
+func newProxiedConn(str http3Stream) *Conn {
 	c := &Conn{
 		str:                   str,
 		writes:                make(chan writeCapsule),
