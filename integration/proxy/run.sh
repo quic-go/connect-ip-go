@@ -25,11 +25,11 @@ echo "GATEWAY_IPV6: $GATEWAY_IPV6"
 echo "inet eth0: $(ip addr show eth0 | grep 'inet ' | awk '{print $2}' | cut -d/ -f1)"
 echo "inet6 eth0: $(ip addr show eth0 | grep 'inet6 ' | awk '{print $2}' | cut -d/ -f1)"
 
-if [ -n "$GATEWAY_IPV4" ] && [ "$(ip addr show eth0 | grep 'inet ' | awk '{print $2}' | cut -d/ -f1)" = "$GATEWAY_IPV4" ]; then
+if [ -n "$GATEWAY_IPV4" ] && ip addr show eth0 | grep 'inet ' | awk '{print $2}' | cut -d/ -f1 | grep -q "$GATEWAY_IPV4"; then
   swap_interfaces
 fi
-if [ -n "$GATEWAY_IPV6" ] && [ "$(ip addr show eth0 | grep 'inet6 ' | awk '{print $2}' | cut -d/ -f1)" = "$GATEWAY_IPV6" ]; then
-  swap_interfaces
+if [ -n "$GATEWAY_IPV6" ] && ip addr show eth0 | grep 'inet6 ' | awk '{print $2}' | cut -d/ -f1 | grep -q "$GATEWAY_IPV6"; then
+    swap_interfaces
 fi
 
 echo "eth0:"
