@@ -11,6 +11,7 @@ import (
 	"golang.org/x/net/ipv6"
 
 	"github.com/quic-go/quic-go"
+	"github.com/quic-go/quic-go/quicvarint"
 
 	"github.com/stretchr/testify/require"
 )
@@ -202,6 +203,25 @@ func TestIncomingDatagrams(t *testing.T) {
 		// after processing the address assignment, this is a valid packet
 		require.NoError(t, conn.handleIncomingProxiedPacket(data))
 	})
+}
+
+func TestSkipUnknownCapsule(t *testing.T) {
+	readChan := make(chan []byte, 1)
+	conn := newProxiedConn(&mockStream{toRead: readChan})
+
+	data := quicvarint.Append(nil, 42)
+	data = quicvarint.Append(data, 3)
+	data = append(data, "foo"...)
+	data = (&addressAssignCapsule{
+		AssignedAddresses: []AssignedAddress{{IPPrefix: netip.MustParsePrefix("192.168.0.10/32")}},
+	}).append(data)
+	readChan <- data
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	prefixes, err := conn.LocalPrefixes(ctx)
+	require.NoError(t, err)
+	require.Equal(t, []netip.Prefix{netip.MustParsePrefix("192.168.0.10/32")}, prefixes)
 }
 
 func FuzzIncomingDatagram(f *testing.F) {
