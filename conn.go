@@ -231,7 +231,9 @@ func (c *Conn) readFromStream() error {
 			default:
 			}
 		default:
-			return fmt.Errorf("unknown capsule type: %d", t)
+			if _, err := io.Copy(io.Discard, cr); err != nil {
+				return err
+			}
 		}
 	}
 }
