@@ -28,7 +28,7 @@ func TestParseAddressAssignCapsule(t *testing.T) {
 	data = append(data, addr2...)
 
 	r := bytes.NewReader(data)
-	typ, cr, err := http3.ParseCapsule(r)
+	typ, cr, err := http3.NewCapsuleParser(r).Next()
 	require.NoError(t, err)
 	require.Equal(t, capsuleTypeAddressAssign, typ)
 	capsule, err := parseAddressAssignCapsule(cr)
@@ -52,7 +52,7 @@ func TestWriteAddressAssignCapsule(t *testing.T) {
 	}
 	data := c.append(nil)
 	r := bytes.NewReader(data)
-	typ, cr, err := http3.ParseCapsule(r)
+	typ, cr, err := http3.NewCapsuleParser(r).Next()
 	require.NoError(t, err)
 	require.Equal(t, capsuleTypeAddressAssign, typ)
 	parsed, err := parseAddressAssignCapsule(cr)
@@ -78,7 +78,7 @@ func testParseAddressCapsuleInvalid(t *testing.T, typ http3.CapsuleType, f func(
 		data = quicvarint.Append(data, uint64(len(addr1))) // Length
 		data = append(data, addr1...)
 
-		_, cr, err := http3.ParseCapsule(bytes.NewReader(data))
+		_, cr, err := http3.NewCapsuleParser(bytes.NewReader(data)).Next()
 		require.NoError(t, err)
 		require.ErrorContains(t, f(cr), "invalid IP version: 5")
 	})
@@ -92,7 +92,7 @@ func testParseAddressCapsuleInvalid(t *testing.T, typ http3.CapsuleType, f func(
 		data = quicvarint.Append(data, uint64(len(addr1))) // Length
 		data = append(data, addr1...)
 
-		_, cr, err := http3.ParseCapsule(bytes.NewReader(data))
+		_, cr, err := http3.NewCapsuleParser(bytes.NewReader(data)).Next()
 		require.NoError(t, err)
 		require.ErrorContains(t, f(cr), "prefix length 33 exceeds IP address length (32)")
 	})
@@ -106,7 +106,7 @@ func testParseAddressCapsuleInvalid(t *testing.T, typ http3.CapsuleType, f func(
 		data = quicvarint.Append(data, uint64(len(addr1))) // Length
 		data = append(data, addr1...)
 
-		_, cr, err := http3.ParseCapsule(bytes.NewReader(data))
+		_, cr, err := http3.NewCapsuleParser(bytes.NewReader(data)).Next()
 		require.NoError(t, err)
 		require.ErrorContains(t, f(cr), "lower bits not covered by prefix length are not all zero")
 	})
@@ -125,11 +125,11 @@ func testParseAddressCapsuleInvalid(t *testing.T, typ http3.CapsuleType, f func(
 		data = append(data, addr1...)
 		data = append(data, addr2...)
 
-		_, cr, err := http3.ParseCapsule(bytes.NewReader(data))
+		_, cr, err := http3.NewCapsuleParser(bytes.NewReader(data)).Next()
 		require.NoError(t, err)
 		require.NoError(t, f(cr))
 		for i := range data {
-			_, cr, err := http3.ParseCapsule(bytes.NewReader(data[:i]))
+			_, cr, err := http3.NewCapsuleParser(bytes.NewReader(data[:i])).Next()
 			if err != nil {
 				if i == 0 {
 					require.ErrorIs(t, err, io.EOF)
@@ -159,7 +159,7 @@ func TestParseAddressRequestCapsule(t *testing.T) {
 	data = append(data, addr2...)
 
 	r := bytes.NewReader(data)
-	typ, cr, err := http3.ParseCapsule(r)
+	typ, cr, err := http3.NewCapsuleParser(r).Next()
 	require.NoError(t, err)
 	require.Equal(t, capsuleTypeAddressRequest, typ)
 	capsule, err := parseAddressRequestCapsule(cr)
@@ -183,7 +183,7 @@ func TestWriteAddressRequestCapsule(t *testing.T) {
 	}
 	data := c.append(nil)
 	r := bytes.NewReader(data)
-	typ, cr, err := http3.ParseCapsule(r)
+	typ, cr, err := http3.NewCapsuleParser(r).Next()
 	require.NoError(t, err)
 	require.Equal(t, capsuleTypeAddressRequest, typ)
 	parsed, err := parseAddressRequestCapsule(cr)
@@ -215,7 +215,7 @@ func TestParseRouteAdvertisementCapsule(t *testing.T) {
 	data = append(data, iprange2...)
 
 	r := bytes.NewReader(data)
-	typ, cr, err := http3.ParseCapsule(r)
+	typ, cr, err := http3.NewCapsuleParser(r).Next()
 	require.NoError(t, err)
 	require.Equal(t, capsuleTypeRouteAdvertisement, typ)
 	capsule, err := parseRouteAdvertisementCapsule(cr)
@@ -247,7 +247,7 @@ func TestWriteRouteAdvertisementCapsule(t *testing.T) {
 	}
 	data := c.append(nil)
 	r := bytes.NewReader(data)
-	typ, cr, err := http3.ParseCapsule(r)
+	typ, cr, err := http3.NewCapsuleParser(r).Next()
 	require.NoError(t, err)
 	require.Equal(t, capsuleTypeRouteAdvertisement, typ)
 	parsed, err := parseRouteAdvertisementCapsule(cr)
@@ -265,7 +265,7 @@ func TestParseRouteAdvertisementCapsuleInvalid(t *testing.T) {
 		data := quicvarint.Append(nil, uint64(capsuleTypeRouteAdvertisement))
 		data = quicvarint.Append(data, uint64(len(iprange1))) // Length
 		data = append(data, iprange1...)
-		_, cr, err := http3.ParseCapsule(bytes.NewReader(data))
+		_, cr, err := http3.NewCapsuleParser(bytes.NewReader(data)).Next()
 		require.NoError(t, err)
 		_, err = parseRouteAdvertisementCapsule(cr)
 		require.ErrorContains(t, err, "invalid IP version: 5")
@@ -280,7 +280,7 @@ func TestParseRouteAdvertisementCapsuleInvalid(t *testing.T) {
 		data = quicvarint.Append(data, uint64(len(iprange1))) // Length
 		data = append(data, iprange1...)
 
-		_, cr, err := http3.ParseCapsule(bytes.NewReader(data))
+		_, cr, err := http3.NewCapsuleParser(bytes.NewReader(data)).Next()
 		require.NoError(t, err)
 		_, err = parseRouteAdvertisementCapsule(cr)
 		require.ErrorContains(t, err, "start IP is greater than end IP")
@@ -303,13 +303,13 @@ func TestParseRouteAdvertisementCapsuleInvalid(t *testing.T) {
 		data = append(data, iprange2...)
 
 		r := bytes.NewReader(data)
-		_, cr, err := http3.ParseCapsule(r)
+		_, cr, err := http3.NewCapsuleParser(r).Next()
 		require.NoError(t, err)
 		_, err = parseRouteAdvertisementCapsule(cr)
 		require.NoError(t, err)
 		require.Zero(t, r.Len())
 		for i := range data {
-			_, cr, err := http3.ParseCapsule(bytes.NewReader(data[:i]))
+			_, cr, err := http3.NewCapsuleParser(bytes.NewReader(data[:i])).Next()
 			if err != nil {
 				if i == 0 {
 					require.ErrorIs(t, err, io.EOF)
