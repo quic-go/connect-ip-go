@@ -42,8 +42,7 @@ func ping(dst netip.Addr, interval time.Duration, count int) (transmitted, recei
 		return 0, 0, fmt.Errorf("ping failed: %w", err)
 	}
 
-	lines := strings.Split(string(output), "\n")
-	for _, line := range lines {
+	for line := range strings.SplitSeq(string(output), "\n") {
 		if strings.Contains(line, "packets transmitted") {
 			parts := strings.Split(line, ",")
 			if len(parts) >= 2 {

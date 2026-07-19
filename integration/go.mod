@@ -1,6 +1,6 @@
 module github.com/quic-go/connect-ip-go/integration
 
-go 1.23
+go 1.25.0
 
 require (
 	github.com/quic-go/connect-ip-go v0.0.0-20241020031425-59b7c60ba830
