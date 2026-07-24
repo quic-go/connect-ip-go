@@ -190,9 +190,9 @@ func (c *Conn) Routes(ctx context.Context) ([]IPRoute, error) {
 
 func (c *Conn) readFromStream() error {
 	defer c.str.Close()
-	r := quicvarint.NewReader(c.str)
+	p := http3.NewCapsuleParser(c.str)
 	for {
-		t, cr, err := http3.ParseCapsule(r)
+		t, cr, err := p.Next()
 		if err != nil {
 			return err
 		}
@@ -231,7 +231,7 @@ func (c *Conn) readFromStream() error {
 			default:
 			}
 		default:
-			if _, err := io.Copy(io.Discard, cr); err != nil {
+			if err := cr.Discard(); err != nil {
 				return err
 			}
 		}
