@@ -15,6 +15,9 @@ const (
 	capsuleTypeAddressAssign      http3.CapsuleType = 1
 	capsuleTypeAddressRequest     http3.CapsuleType = 2
 	capsuleTypeRouteAdvertisement http3.CapsuleType = 3
+	// draft-ietf-masque-connect-ip-dns-06
+	capsuleTypeDNSAssign http3.CapsuleType = 0x1ace79ec
+	capsuleTypePREF64    http3.CapsuleType = 0x274c0fbc
 )
 
 // addressAssignCapsule represents an ADDRESS_ASSIGN capsule
@@ -265,4 +268,203 @@ func parseIPAddressRange(r io.Reader) (IPRoute, error) {
 		EndIP:      endIP,
 		IPProtocol: ipProtocol,
 	}, nil
+}
+
+// dnsAssignCapsule represents a DNS_ASSIGN capsule defined by
+// draft-ietf-masque-connect-ip-dns-06.
+type dnsAssignCapsule struct {
+	DNSConfigurations []DNSConfiguration
+}
+
+func parseCounted[T any](r quicvarint.Reader, parse func(quicvarint.Reader) (T, error)) ([]T, error) {
+	count, err := quicvarint.Read(r)
+	if err != nil {
+		return nil, err
+	}
+	var values []T
+	for range count {
+		value, err := parse(r)
+		if err != nil {
+			return nil, err
+		}
+		values = append(values, value)
+	}
+	return values, nil
+}
+
+func parseDNSAssignCapsule(r http3.CapsuleReader) (*dnsAssignCapsule, error) {
+	capsule := &dnsAssignCapsule{}
+	for r.Remaining() > 0 {
+		nameservers, err := parseCounted(r, parseDNSNameserver)
+		if err != nil {
+			return nil, err
+		}
+		internalDomains, err := parseCounted(r, parseDomain)
+		if err != nil {
+			return nil, err
+		}
+		searchDomains, err := parseCounted(r, parseDomain)
+		if err != nil {
+			return nil, err
+		}
+		capsule.DNSConfigurations = append(capsule.DNSConfigurations, DNSConfiguration{
+			Nameservers:     nameservers,
+			InternalDomains: internalDomains,
+			SearchDomains:   searchDomains,
+		})
+	}
+	return capsule, nil
+}
+
+func parseDNSNameserver(r quicvarint.Reader) (DNSNameserver, error) {
+	var priority uint16
+	if err := binary.Read(r, binary.BigEndian, &priority); err != nil {
+		return DNSNameserver{}, err
+	}
+	if priority == 0 {
+		return DNSNameserver{}, errors.New("service priority must not be zero")
+	}
+	nameserver := DNSNameserver{ServicePriority: priority}
+	ipv4Count, err := quicvarint.Read(r)
+	if err != nil {
+		return DNSNameserver{}, err
+	}
+	for range ipv4Count {
+		var addr [4]byte
+		if _, err := io.ReadFull(r, addr[:]); err != nil {
+			return DNSNameserver{}, err
+		}
+		nameserver.IPv4Addresses = append(nameserver.IPv4Addresses, netip.AddrFrom4(addr))
+	}
+
+	ipv6Count, err := quicvarint.Read(r)
+	if err != nil {
+		return DNSNameserver{}, err
+	}
+	for range ipv6Count {
+		var addr [16]byte
+		if _, err := io.ReadFull(r, addr[:]); err != nil {
+			return DNSNameserver{}, err
+		}
+		nameserver.IPv6Addresses = append(nameserver.IPv6Addresses, netip.AddrFrom16(addr))
+	}
+
+	nameserver.AuthenticationDomainName, err = parseDomain(r)
+	if err != nil {
+		return DNSNameserver{}, err
+	}
+	paramsLen, err := quicvarint.Read(r)
+	if err != nil {
+		return DNSNameserver{}, err
+	}
+	if paramsLen > maxServiceParametersLen {
+		return DNSNameserver{}, fmt.Errorf("service parameters too long: %d bytes", paramsLen)
+	}
+	if paramsLen > 0 {
+		nameserver.ServiceParameters = make([]byte, int(paramsLen))
+		if _, err := io.ReadFull(r, nameserver.ServiceParameters); err != nil {
+			return DNSNameserver{}, err
+		}
+	}
+	return nameserver, nil
+}
+
+func parseDomain(r quicvarint.Reader) (string, error) {
+	l, err := quicvarint.Read(r)
+	if err != nil {
+		return "", err
+	}
+	if l > maxDomainNameLen {
+		return "", fmt.Errorf("domain name too long: %d bytes", l)
+	}
+	if l == 0 {
+		return "", nil
+	}
+	b := make([]byte, int(l))
+	if _, err := io.ReadFull(r, b); err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+func (c *dnsAssignCapsule) append(b []byte) []byte {
+	payload := make([]byte, 0, 256)
+	for _, cfg := range c.DNSConfigurations {
+		payload = quicvarint.Append(payload, uint64(len(cfg.Nameservers)))
+		for _, nameserver := range cfg.Nameservers {
+			payload = binary.BigEndian.AppendUint16(payload, nameserver.ServicePriority)
+			payload = quicvarint.Append(payload, uint64(len(nameserver.IPv4Addresses)))
+			for _, addr := range nameserver.IPv4Addresses {
+				payload = append(payload, addr.AsSlice()...)
+			}
+			payload = quicvarint.Append(payload, uint64(len(nameserver.IPv6Addresses)))
+			for _, addr := range nameserver.IPv6Addresses {
+				payload = append(payload, addr.AsSlice()...)
+			}
+			payload = appendDomain(payload, nameserver.AuthenticationDomainName)
+			payload = quicvarint.Append(payload, uint64(len(nameserver.ServiceParameters)))
+			payload = append(payload, nameserver.ServiceParameters...)
+		}
+		payload = quicvarint.Append(payload, uint64(len(cfg.InternalDomains)))
+		for _, domain := range cfg.InternalDomains {
+			payload = appendDomain(payload, domain)
+		}
+		payload = quicvarint.Append(payload, uint64(len(cfg.SearchDomains)))
+		for _, domain := range cfg.SearchDomains {
+			payload = appendDomain(payload, domain)
+		}
+	}
+	b = quicvarint.Append(b, uint64(capsuleTypeDNSAssign))
+	b = quicvarint.Append(b, uint64(len(payload)))
+	return append(b, payload...)
+}
+
+func appendDomain(b []byte, domain string) []byte {
+	b = quicvarint.Append(b, uint64(len(domain)))
+	return append(b, domain...)
+}
+
+// pref64Capsule represents a PREF64 capsule defined by
+// draft-ietf-masque-connect-ip-dns-06.
+type pref64Capsule struct {
+	Prefixes []netip.Prefix
+}
+
+func parsePREF64Capsule(r http3.CapsuleReader) (*pref64Capsule, error) {
+	if r.Remaining()%13 != 0 {
+		return nil, errors.New("PREF64 capsule length is not a multiple of 13")
+	}
+	capsule := &pref64Capsule{}
+	for r.Remaining() > 0 {
+		prefixLen, err := r.ReadByte()
+		if err != nil {
+			return nil, err
+		}
+		switch prefixLen {
+		case 32, 40, 48, 56, 64, 96:
+		default:
+			return nil, fmt.Errorf("invalid NAT64 prefix length: %d", prefixLen)
+		}
+		var addrBytes [16]byte
+		if _, err := io.ReadFull(r, addrBytes[:12]); err != nil {
+			return nil, err
+		}
+		prefix := netip.PrefixFrom(netip.AddrFrom16(addrBytes), int(prefixLen))
+		if prefix != prefix.Masked() {
+			return nil, errors.New("lower bits not covered by NAT64 prefix length are not all zero")
+		}
+		capsule.Prefixes = append(capsule.Prefixes, prefix)
+	}
+	return capsule, nil
+}
+
+func (c *pref64Capsule) append(b []byte) []byte {
+	b = quicvarint.Append(b, uint64(capsuleTypePREF64))
+	b = quicvarint.Append(b, uint64(13*len(c.Prefixes)))
+	for _, prefix := range c.Prefixes {
+		b = append(b, byte(prefix.Bits()))
+		addr := prefix.Addr().As16()
+		b = append(b, addr[:12]...)
+	}
+	return b
 }

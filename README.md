@@ -7,6 +7,8 @@ connect-ip-go is an implementation of the CONNECT-IP protocol [RFC 9484](https:/
 
 It is based on [quic-go](https://github.com/quic-go/quic-go), and provides both a client and a proxy implementation.
 
+It also implements [draft-ietf-masque-connect-ip-dns-06](https://datatracker.ietf.org/doc/html/draft-ietf-masque-connect-ip-dns-06), which adds DNS and PREF64 configuration to CONNECT-IP.
+
 At this point, it supports the following use cases:
 * Remote Access VPN, see [Section 8.1 of RFC 9484](https://datatracker.ietf.org/doc/html/rfc9484#section-8.1)
 * Site-to-Site VPN, see [Section 8.2 of RFC 9484](https://datatracker.ietf.org/doc/html/rfc9484#section-8.2)

@@ -12,6 +12,7 @@ import (
 	"golang.org/x/net/ipv6"
 
 	"github.com/quic-go/quic-go"
+	"github.com/quic-go/quic-go/http3"
 	"github.com/quic-go/quic-go/quicvarint"
 
 	"github.com/stretchr/testify/require"
@@ -36,7 +37,7 @@ var _ http3Stream = &mockStream{}
 
 func (m *mockStream) StreamID() quic.StreamID { panic("implement me") }
 func (m *mockStream) Read(p []byte) (int, error) {
-	if m.reading == nil {
+	if len(m.reading) == 0 {
 		m.reading = <-m.toRead
 	}
 	n := copy(p, m.reading)
@@ -90,6 +91,152 @@ func TestCapsuleQueueLimit(t *testing.T) {
 
 	// Let the writer finish the in-progress write and observe the closed connection.
 	<-writes
+}
+
+func TestDNSConfiguration(t *testing.T) {
+	cfg := []DNSConfiguration{
+		{
+			Nameservers: []DNSNameserver{{
+				ServicePriority:          1,
+				IPv4Addresses:            []netip.Addr{netip.MustParseAddr("192.0.2.53")},
+				IPv6Addresses:            []netip.Addr{netip.MustParseAddr("2001:db8::53")},
+				AuthenticationDomainName: "resolver.example",
+				ServiceParameters:        []byte{0, 3, 0, 2, 0x21, 0x35},
+			}},
+			InternalDomains: []string{"internal.example"},
+			SearchDomains:   []string{"internal.example", "example"},
+		},
+		{
+			Nameservers: []DNSNameserver{{
+				ServicePriority: 2,
+				IPv4Addresses:   []netip.Addr{netip.MustParseAddr("198.51.100.53")},
+			}},
+			InternalDomains: []string{"other.example"},
+		},
+	}
+
+	t.Run("send", func(t *testing.T) {
+		written := make(chan []byte)
+		writeStarted := make(chan struct{})
+		conn := newProxiedConn(&mockStream{writeStarted: writeStarted, written: written}, nil)
+		t.Cleanup(func() { conn.Close() })
+
+		require.NoError(t, conn.AssignAddresses(nil))
+		select {
+		case <-writeStarted:
+		case <-time.After(time.Second):
+			t.Fatal("capsule write did not start")
+		}
+		require.NoError(t, conn.SendDNSConfiguration(cfg))
+		cfg[0].Nameservers[0].ServicePriority = 42
+		<-written // unblock the address assignment write
+		data := <-written
+		cfg[0].Nameservers[0].ServicePriority = 1
+
+		typ, cr, err := http3.NewCapsuleParser(bytes.NewReader(data)).Next()
+		require.NoError(t, err)
+		require.Equal(t, capsuleTypeDNSAssign, typ)
+		capsule, err := parseDNSAssignCapsule(cr)
+		require.NoError(t, err)
+		require.Equal(t, cfg, capsule.DNSConfigurations)
+	})
+
+	t.Run("receive", func(t *testing.T) {
+		toRead := make(chan []byte, 1)
+		conn := newProxiedConn(&mockStream{toRead: toRead}, nil)
+		toRead <- (&dnsAssignCapsule{DNSConfigurations: cfg}).append(nil)
+
+		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+		defer cancel()
+		received, err := conn.ReceiveDNSConfiguration(ctx)
+		require.NoError(t, err)
+		require.Equal(t, cfg, received)
+	})
+
+	t.Run("invalid", func(t *testing.T) {
+		conn := newProxiedConn(&mockStream{}, nil)
+		require.ErrorContains(t,
+			conn.SendDNSConfiguration([]DNSConfiguration{
+				{Nameservers: []DNSNameserver{{ServicePriority: 0}}},
+			}),
+			"service priority must not be zero",
+		)
+		require.ErrorContains(t,
+			conn.SendDNSConfiguration([]DNSConfiguration{
+				{Nameservers: []DNSNameserver{{
+					ServicePriority: 1,
+					IPv4Addresses:   []netip.Addr{netip.MustParseAddr("2001:db8::1")},
+				}}},
+			}),
+			"non-IPv4 address",
+		)
+	})
+}
+
+func TestPREF64Configuration(t *testing.T) {
+	prefixes := []netip.Prefix{
+		netip.MustParsePrefix("64:ff9b::/96"),
+		netip.MustParsePrefix("2001:db8:1200::/40"),
+	}
+
+	t.Run("send", func(t *testing.T) {
+		written := make(chan []byte)
+		writeStarted := make(chan struct{})
+		conn := newProxiedConn(&mockStream{writeStarted: writeStarted, written: written}, nil)
+		t.Cleanup(func() { conn.Close() })
+
+		require.NoError(t, conn.AssignAddresses(nil))
+		select {
+		case <-writeStarted:
+		case <-time.After(time.Second):
+			t.Fatal("capsule write did not start")
+		}
+		require.NoError(t, conn.SendPREF64Configuration(prefixes))
+		prefixes[0] = netip.MustParsePrefix("2001:db8::/32")
+		<-written // unblock the address assignment write
+		data := <-written
+		prefixes[0] = netip.MustParsePrefix("64:ff9b::/96")
+
+		typ, cr, err := http3.NewCapsuleParser(bytes.NewReader(data)).Next()
+		require.NoError(t, err)
+		require.Equal(t, capsuleTypePREF64, typ)
+		capsule, err := parsePREF64Capsule(cr)
+		require.NoError(t, err)
+		require.Equal(t, prefixes, capsule.Prefixes)
+	})
+
+	t.Run("receive and clear", func(t *testing.T) {
+		toRead := make(chan []byte, 2)
+		conn := newProxiedConn(&mockStream{toRead: toRead}, nil)
+		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+		defer cancel()
+
+		toRead <- (&pref64Capsule{Prefixes: prefixes}).append(nil)
+		received, err := conn.ReceivePREF64Configuration(ctx)
+		require.NoError(t, err)
+		require.Equal(t, prefixes, received)
+
+		toRead <- (&pref64Capsule{}).append(nil)
+		received, err = conn.ReceivePREF64Configuration(ctx)
+		require.NoError(t, err)
+		require.Empty(t, received)
+	})
+
+	t.Run("invalid", func(t *testing.T) {
+		conn := newProxiedConn(&mockStream{}, nil)
+		require.ErrorContains(t,
+			conn.SendPREF64Configuration([]netip.Prefix{
+				netip.MustParsePrefix("192.0.2.0/24"),
+			}),
+			"not an IPv6 prefix",
+		)
+		require.ErrorContains(t,
+			conn.SendPREF64Configuration([]netip.Prefix{
+				netip.MustParsePrefix("2001:db8::/80"),
+			}),
+			"invalid prefix length",
+		)
+	})
 }
 
 func TestIncomingDatagrams(t *testing.T) {
