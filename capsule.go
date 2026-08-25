@@ -317,10 +317,11 @@ func parseDNSAssignCapsule(r http3.CapsuleReader) (*dnsAssignCapsule, error) {
 }
 
 func parseDNSNameserver(r quicvarint.Reader) (DNSNameserver, error) {
-	var priority uint16
-	if err := binary.Read(r, binary.BigEndian, &priority); err != nil {
+	var priorityBytes [2]byte
+	if _, err := io.ReadFull(r, priorityBytes[:]); err != nil {
 		return DNSNameserver{}, err
 	}
+	priority := binary.BigEndian.Uint16(priorityBytes[:])
 	if priority == 0 {
 		return DNSNameserver{}, errors.New("service priority must not be zero")
 	}
