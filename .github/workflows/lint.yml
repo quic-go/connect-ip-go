@@ -10,7 +10,7 @@ jobs:
       fail-fast: false
       matrix:
         module: [".", "./integration"]
-        go: [ "1.25.x", "1.26.x" ]
+        go: [ "1.26.x", "1.27.x" ]
     name: Lint (${{ matrix.module }}, Go ${{ matrix.go }})
     steps:
       - uses: actions/checkout@v7
@@ -31,7 +31,7 @@ jobs:
         working-directory: ${{ matrix.module }}
         run: go mod tidy -diff
       - name: Run go fix
-        if: (success() || failure()) && matrix.go == '1.26.x'
+        if: (success() || failure()) && matrix.go == '1.27.x'
         working-directory: ${{ matrix.module }}
         run: go fix -diff ./...
       - name: gofmt
