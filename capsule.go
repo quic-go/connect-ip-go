@@ -293,7 +293,7 @@ func parseCounted[T any](r quicvarint.Reader, parse func(quicvarint.Reader) (T, 
 }
 
 func parseDNSAssignCapsule(r http3.CapsuleReader) (*dnsAssignCapsule, error) {
-	capsule := &dnsAssignCapsule{}
+	var configurations []DNSConfiguration
 	for r.Remaining() > 0 {
 		nameservers, err := parseCounted(r, parseDNSNameserver)
 		if err != nil {
@@ -307,13 +307,14 @@ func parseDNSAssignCapsule(r http3.CapsuleReader) (*dnsAssignCapsule, error) {
 		if err != nil {
 			return nil, err
 		}
-		capsule.DNSConfigurations = append(capsule.DNSConfigurations, DNSConfiguration{
+		configuration := DNSConfiguration{
 			Nameservers:     nameservers,
 			InternalDomains: internalDomains,
 			SearchDomains:   searchDomains,
-		})
+		}
+		configurations = append(configurations, configuration)
 	}
-	return capsule, nil
+	return &dnsAssignCapsule{DNSConfigurations: configurations}, nil
 }
 
 func parseDNSNameserver(r quicvarint.Reader) (DNSNameserver, error) {
@@ -321,36 +322,37 @@ func parseDNSNameserver(r quicvarint.Reader) (DNSNameserver, error) {
 	if _, err := io.ReadFull(r, priorityBytes[:]); err != nil {
 		return DNSNameserver{}, err
 	}
-	priority := binary.BigEndian.Uint16(priorityBytes[:])
-	if priority == 0 {
+	servicePriority := binary.BigEndian.Uint16(priorityBytes[:])
+	if servicePriority == 0 {
 		return DNSNameserver{}, errors.New("service priority must not be zero")
 	}
-	nameserver := DNSNameserver{ServicePriority: priority}
 	ipv4Count, err := quicvarint.Read(r)
 	if err != nil {
 		return DNSNameserver{}, err
 	}
+	var ipv4Addresses []netip.Addr
 	for range ipv4Count {
 		var addr [4]byte
 		if _, err := io.ReadFull(r, addr[:]); err != nil {
 			return DNSNameserver{}, err
 		}
-		nameserver.IPv4Addresses = append(nameserver.IPv4Addresses, netip.AddrFrom4(addr))
+		ipv4Addresses = append(ipv4Addresses, netip.AddrFrom4(addr))
 	}
 
 	ipv6Count, err := quicvarint.Read(r)
 	if err != nil {
 		return DNSNameserver{}, err
 	}
+	var ipv6Addresses []netip.Addr
 	for range ipv6Count {
 		var addr [16]byte
 		if _, err := io.ReadFull(r, addr[:]); err != nil {
 			return DNSNameserver{}, err
 		}
-		nameserver.IPv6Addresses = append(nameserver.IPv6Addresses, netip.AddrFrom16(addr))
+		ipv6Addresses = append(ipv6Addresses, netip.AddrFrom16(addr))
 	}
 
-	nameserver.AuthenticationDomainName, err = parseDomain(r)
+	authenticationDomainName, err := parseDomain(r)
 	if err != nil {
 		return DNSNameserver{}, err
 	}
@@ -361,13 +363,20 @@ func parseDNSNameserver(r quicvarint.Reader) (DNSNameserver, error) {
 	if paramsLen > maxServiceParametersLen {
 		return DNSNameserver{}, fmt.Errorf("service parameters too long: %d bytes", paramsLen)
 	}
+	var serviceParameters []byte
 	if paramsLen > 0 {
-		nameserver.ServiceParameters = make([]byte, int(paramsLen))
-		if _, err := io.ReadFull(r, nameserver.ServiceParameters); err != nil {
+		serviceParameters = make([]byte, int(paramsLen))
+		if _, err := io.ReadFull(r, serviceParameters); err != nil {
 			return DNSNameserver{}, err
 		}
 	}
-	return nameserver, nil
+	return DNSNameserver{
+		ServicePriority:          servicePriority,
+		IPv4Addresses:            ipv4Addresses,
+		IPv6Addresses:            ipv6Addresses,
+		AuthenticationDomainName: authenticationDomainName,
+		ServiceParameters:        serviceParameters,
+	}, nil
 }
 
 func parseDomain(r quicvarint.Reader) (string, error) {
@@ -435,7 +444,7 @@ func parsePREF64Capsule(r http3.CapsuleReader) (*pref64Capsule, error) {
 	if r.Remaining()%13 != 0 {
 		return nil, errors.New("PREF64 capsule length is not a multiple of 13")
 	}
-	capsule := &pref64Capsule{}
+	var prefixes []netip.Prefix
 	for r.Remaining() > 0 {
 		prefixLen, err := r.ReadByte()
 		if err != nil {
@@ -454,9 +463,9 @@ func parsePREF64Capsule(r http3.CapsuleReader) (*pref64Capsule, error) {
 		if prefix != prefix.Masked() {
 			return nil, errors.New("lower bits not covered by NAT64 prefix length are not all zero")
 		}
-		capsule.Prefixes = append(capsule.Prefixes, prefix)
+		prefixes = append(prefixes, prefix)
 	}
-	return capsule, nil
+	return &pref64Capsule{Prefixes: prefixes}, nil
 }
 
 func (c *pref64Capsule) append(b []byte) []byte {

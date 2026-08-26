@@ -339,15 +339,7 @@ func TestParseDNSAssignCapsule(t *testing.T) {
 	payload = appendDomain(payload, "other.example")
 	payload = quicvarint.Append(payload, 0)
 
-	data := quicvarint.Append(nil, uint64(capsuleTypeDNSAssign))
-	data = quicvarint.Append(data, uint64(len(payload)))
-	data = append(data, payload...)
-
-	r := bytes.NewReader(data)
-	typ, cr, err := http3.NewCapsuleParser(r).Next()
-	require.NoError(t, err)
-	require.Equal(t, capsuleTypeDNSAssign, typ)
-	capsule, err := parseDNSAssignCapsule(cr)
+	capsule, err := parseDNSAssignCapsule(newCapsuleReader(t, capsuleTypeDNSAssign, payload))
 	require.NoError(t, err)
 	require.Equal(t, &dnsAssignCapsule{
 		DNSConfigurations: []DNSConfiguration{
@@ -372,7 +364,6 @@ func TestParseDNSAssignCapsule(t *testing.T) {
 			},
 		},
 	}, capsule)
-	require.Zero(t, r.Len())
 }
 
 func TestWriteDNSAssignCapsule(t *testing.T) {
