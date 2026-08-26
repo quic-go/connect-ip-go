@@ -312,6 +312,9 @@ func parseDNSAssignCapsule(r http3.CapsuleReader) (*dnsAssignCapsule, error) {
 			InternalDomains: internalDomains,
 			SearchDomains:   searchDomains,
 		}
+		if err := configuration.validate(); err != nil {
+			return nil, fmt.Errorf("invalid DNS configuration: %w", err)
+		}
 		configurations = append(configurations, configuration)
 	}
 	return &dnsAssignCapsule{DNSConfigurations: configurations}, nil
@@ -323,9 +326,6 @@ func parseDNSNameserver(r quicvarint.Reader) (DNSNameserver, error) {
 		return DNSNameserver{}, err
 	}
 	servicePriority := binary.BigEndian.Uint16(priorityBytes[:])
-	if servicePriority == 0 {
-		return DNSNameserver{}, errors.New("service priority must not be zero")
-	}
 	ipv4Count, err := quicvarint.Read(r)
 	if err != nil {
 		return DNSNameserver{}, err

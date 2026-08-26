@@ -4,6 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"strings"
+	"unicode/utf8"
+
+	"golang.org/x/net/idna"
 )
 
 const (
@@ -14,35 +18,72 @@ const (
 	maxServiceParametersLen = 1<<16 - 1
 )
 
-// DNSNameserver describes the Nameserver structure defined in Section 3.2 of
-// draft-ietf-masque-connect-ip-dns-06. ServiceParameters contains SvcParams in
-// the wire format defined by RFC 9460.
+// DNSNameserver describes the Nameserver structure defined by
+// draft-ietf-masque-connect-ip-dns-06. ServiceParameters contains SvcParams
+// in the wire format defined by RFC 9460.
 type DNSNameserver struct {
-	ServicePriority          uint16
-	IPv4Addresses            []netip.Addr
-	IPv6Addresses            []netip.Addr
+	ServicePriority uint16
+	IPv4Addresses   []netip.Addr
+	IPv6Addresses   []netip.Addr
+	// AuthenticationDomainName is the fully qualified domain name of the
+	// nameserver. It must be in DNS presentation format using IDNA A-labels;
+	// U-labels are rejected. It may be empty only when the nameserver supports
+	// unencrypted DNS exclusively.
 	AuthenticationDomainName string
 	ServiceParameters        []byte
 }
 
-// DNSConfiguration describes the DNS Configuration structure defined in
-// Section 3.3 of draft-ietf-masque-connect-ip-dns-06. An empty internal domain
-// represents the DNS root.
+// DNSConfiguration describes the DNS Configuration structure defined by
+// draft-ietf-masque-connect-ip-dns-06.
 type DNSConfiguration struct {
-	Nameservers     []DNSNameserver
+	Nameservers []DNSNameserver
+	// InternalDomains contains fully qualified domain names in DNS presentation
+	// format using IDNA A-labels. U-labels are rejected. An empty string
+	// represents the DNS root.
 	InternalDomains []string
-	SearchDomains   []string
+	// SearchDomains contains fully qualified domain names in DNS presentation
+	// format using IDNA A-labels. U-labels and empty strings are rejected.
+	SearchDomains []string
+}
+
+var dnsNameProfile = idna.New(
+	idna.MapForLookup(),
+	idna.BidiRule(),
+	idna.VerifyDNSLength(true),
+)
+
+func validateDomainName(name string, allowEmpty bool) error {
+	if name == "" {
+		if allowEmpty {
+			return nil
+		}
+		return errors.New("must not be empty")
+	}
+	for i := range len(name) {
+		if name[i] >= utf8.RuneSelf {
+			return errors.New("must use IDNA A-label form")
+		}
+	}
+	ascii, err := dnsNameProfile.ToASCII(name)
+	if err != nil {
+		return fmt.Errorf("must be a valid IDNA A-label: %w", err)
+	}
+	if !strings.EqualFold(ascii, name) {
+		return errors.New("must use IDNA A-label form")
+	}
+	return nil
 }
 
 func (c DNSConfiguration) validate() error {
 	for _, nameserver := range c.Nameservers {
-		switch {
-		case nameserver.ServicePriority == 0:
+		if nameserver.ServicePriority == 0 {
 			return errors.New("service priority must not be zero")
-		case len(nameserver.AuthenticationDomainName) > maxDomainNameLen:
-			return errors.New("authentication domain name too long")
-		case len(nameserver.ServiceParameters) > maxServiceParametersLen:
+		}
+		if len(nameserver.ServiceParameters) > maxServiceParametersLen {
 			return errors.New("service parameters too long")
+		}
+		if err := validateDomainName(nameserver.AuthenticationDomainName, true); err != nil {
+			return fmt.Errorf("invalid authentication domain name: %w", err)
 		}
 		for _, addr := range nameserver.IPv4Addresses {
 			if !addr.Is4() {
@@ -56,13 +97,13 @@ func (c DNSConfiguration) validate() error {
 		}
 	}
 	for _, domain := range c.InternalDomains {
-		if len(domain) > maxDomainNameLen {
-			return errors.New("internal domain name too long")
+		if err := validateDomainName(domain, true); err != nil {
+			return fmt.Errorf("invalid internal domain name: %w", err)
 		}
 	}
 	for _, domain := range c.SearchDomains {
-		if len(domain) > maxDomainNameLen {
-			return errors.New("search domain name too long")
+		if err := validateDomainName(domain, false); err != nil {
+			return fmt.Errorf("invalid search domain name: %w", err)
 		}
 	}
 	return nil

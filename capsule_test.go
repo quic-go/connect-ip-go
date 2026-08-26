@@ -382,7 +382,7 @@ func TestWriteDNSAssignCapsule(t *testing.T) {
 				IPv4Addresses:   []netip.Addr{netip.MustParseAddr("192.0.2.53")},
 			}},
 			InternalDomains: []string{"internal.example"},
-			SearchDomains:   []string{"internal.example", "example"},
+			SearchDomains:   []string{"internal.example", "XN--BCHER-KVA.example"},
 		},
 	}}
 
@@ -428,6 +428,16 @@ func TestParseDNSAssignCapsuleInvalid(t *testing.T) {
 
 		_, err := parseDNSAssignCapsule(newCapsuleReader(t, capsuleTypeDNSAssign, payload))
 		require.ErrorContains(t, err, "domain name too long")
+	})
+
+	t.Run("domain must use A-label form", func(t *testing.T) {
+		payload := quicvarint.Append(nil, 0) // Nameserver Count
+		payload = quicvarint.Append(payload, 1)
+		payload = appendDomain(payload, "bücher.example")
+		payload = quicvarint.Append(payload, 0)
+
+		_, err := parseDNSAssignCapsule(newCapsuleReader(t, capsuleTypeDNSAssign, payload))
+		require.ErrorContains(t, err, "invalid internal domain name: must use IDNA A-label form")
 	})
 
 	t.Run("service parameters length limit", func(t *testing.T) {

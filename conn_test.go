@@ -170,6 +170,15 @@ func TestDNSConfiguration(t *testing.T) {
 			}),
 			"non-IPv4 address",
 		)
+		require.ErrorContains(t,
+			conn.SendDNSConfiguration([]DNSConfiguration{
+				{
+					Nameservers:     []DNSNameserver{{ServicePriority: 1}},
+					InternalDomains: []string{"bücher.example"},
+				},
+			}),
+			"invalid internal domain name: must use IDNA A-label form",
+		)
 	})
 }
 
