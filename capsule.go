@@ -276,43 +276,66 @@ type dnsAssignCapsule struct {
 	DNSConfigurations []DNSConfiguration
 }
 
-// This limits the wire size, not memory use. Parsing can amplify memory use by
-// roughly 50x, and the limit is chosen accordingly.
-const maxDNSAssignCapsuleSize = 32 << 10
+const (
+	maxDNSAssignMemory = 8 << 20 // 8 MiB
+	// dnsValueOverhead is an approximate per-value allocation overhead used for
+	// DoS protection. Variable-sized data is accounted separately.
+	dnsValueOverhead = 32
+)
 
-func parseCounted[T any](r http3.CapsuleReader, parse func(http3.CapsuleReader) (T, error)) ([]T, error) {
+var errDNSAssignMemoryLimit = fmt.Errorf("DNS_ASSIGN exceeds the %d bytes memory limit", maxDNSAssignMemory)
+
+// parseCounted passes the remaining memory budget to parse. parse returns the
+// budget after parsing the value, and parseCounted subtracts dnsValueOverhead
+// before appending it.
+func parseCounted[T any](
+	r http3.CapsuleReader,
+	remainingMemory uint64,
+	parse func(r http3.CapsuleReader, remainingMemory uint64) (value T, remainingMemoryAfterParsing uint64, err error),
+) (values []T, remainingMemoryAfterParsing uint64, err error) {
 	count, err := quicvarint.Read(r)
 	if err != nil {
-		return nil, err
+		return nil, remainingMemory, err
 	}
-	var values []T
+	if count == 0 {
+		return nil, remainingMemory, nil
+	}
+	// cap the initial allocation to avoid allocating too much memory from the count alone
+	values = make([]T, 0, min(count, 4096))
 	for range count {
-		value, err := parse(r)
-		if err != nil {
-			return nil, err
+		value, remainingMemoryAfterValue, parseErr := parse(r, remainingMemory)
+		if parseErr != nil {
+			return nil, remainingMemory, parseErr
 		}
+		remainingMemory = remainingMemoryAfterValue
+		if dnsValueOverhead > remainingMemory {
+			return nil, remainingMemory, errDNSAssignMemoryLimit
+		}
+		remainingMemory -= dnsValueOverhead
 		values = append(values, value)
 	}
-	return values, nil
+	return values, remainingMemory, nil
 }
 
 func parseDNSAssignCapsule(r http3.CapsuleReader) (*dnsAssignCapsule, error) {
-	if r.Remaining() > maxDNSAssignCapsuleSize {
-		return nil, fmt.Errorf("DNS_ASSIGN capsule too large: %d bytes (maximum %d)", r.Remaining(), maxDNSAssignCapsuleSize)
-	}
+	remainingMemory := uint64(maxDNSAssignMemory)
 	var configurations []DNSConfiguration
 	for r.Remaining() > 0 {
-		nameservers, err := parseCounted(r, parseDNSNameserver)
+		var nameservers []DNSNameserver
+		var err error
+		nameservers, remainingMemory, err = parseCounted(r, remainingMemory, parseDNSNameserver)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("parsing nameservers: %w", err)
 		}
-		internalDomains, err := parseCounted(r, parseDomain)
+		var internalDomains []string
+		internalDomains, remainingMemory, err = parseCounted(r, remainingMemory, parseDomain)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("parsing internal domains: %w", err)
 		}
-		searchDomains, err := parseCounted(r, parseDomain)
+		var searchDomains []string
+		searchDomains, remainingMemory, err = parseCounted(r, remainingMemory, parseDomain)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("parsing search domains: %w", err)
 		}
 		configuration := DNSConfiguration{
 			Nameservers:     nameservers,
@@ -322,89 +345,96 @@ func parseDNSAssignCapsule(r http3.CapsuleReader) (*dnsAssignCapsule, error) {
 		if err := configuration.validate(); err != nil {
 			return nil, fmt.Errorf("invalid DNS configuration: %w", err)
 		}
+		if dnsValueOverhead > remainingMemory {
+			return nil, fmt.Errorf("parsing DNS_ASSIGN configuration %d: %w", len(configurations)+1, errDNSAssignMemoryLimit)
+		}
+		remainingMemory -= dnsValueOverhead
 		configurations = append(configurations, configuration)
 	}
 	return &dnsAssignCapsule{DNSConfigurations: configurations}, nil
 }
 
-func parseDNSNameserver(r http3.CapsuleReader) (DNSNameserver, error) {
+func parseDNSNameserver(r http3.CapsuleReader, remainingMemory uint64) (DNSNameserver, uint64, error) {
 	var priorityBytes [2]byte
 	if _, err := io.ReadFull(r, priorityBytes[:]); err != nil {
-		return DNSNameserver{}, err
+		return DNSNameserver{}, remainingMemory, err
 	}
 	servicePriority := binary.BigEndian.Uint16(priorityBytes[:])
-	ipv4Count, err := quicvarint.Read(r)
-	if err != nil {
-		return DNSNameserver{}, err
-	}
-	var ipv4Addresses []netip.Addr
-	for range ipv4Count {
+	ipv4Addresses, remainingMemory, err := parseCounted(r, remainingMemory, func(r http3.CapsuleReader, remainingMemory uint64) (netip.Addr, uint64, error) {
 		var addr [4]byte
 		if _, err := io.ReadFull(r, addr[:]); err != nil {
-			return DNSNameserver{}, err
+			return netip.Addr{}, remainingMemory, err
 		}
-		ipv4Addresses = append(ipv4Addresses, netip.AddrFrom4(addr))
+		return netip.AddrFrom4(addr), remainingMemory, nil
+	})
+	if err != nil {
+		return DNSNameserver{}, remainingMemory, fmt.Errorf("parsing IPv4 addresses: %w", err)
 	}
 
-	ipv6Count, err := quicvarint.Read(r)
-	if err != nil {
-		return DNSNameserver{}, err
-	}
-	var ipv6Addresses []netip.Addr
-	for range ipv6Count {
+	ipv6Addresses, remainingMemory, err := parseCounted(r, remainingMemory, func(r http3.CapsuleReader, remainingMemory uint64) (netip.Addr, uint64, error) {
 		var addr [16]byte
 		if _, err := io.ReadFull(r, addr[:]); err != nil {
-			return DNSNameserver{}, err
+			return netip.Addr{}, remainingMemory, err
 		}
-		ipv6Addresses = append(ipv6Addresses, netip.AddrFrom16(addr))
+		return netip.AddrFrom16(addr), remainingMemory, nil
+	})
+	if err != nil {
+		return DNSNameserver{}, remainingMemory, fmt.Errorf("parsing IPv6 addresses: %w", err)
 	}
 
-	authenticationDomainName, err := parseDomain(r)
+	authenticationDomainName, remainingMemory, err := parseDomain(r, remainingMemory)
 	if err != nil {
-		return DNSNameserver{}, err
+		return DNSNameserver{}, remainingMemory, fmt.Errorf("parsing authentication domain: %w", err)
 	}
 	paramsLen, err := quicvarint.Read(r)
 	if err != nil {
-		return DNSNameserver{}, err
+		return DNSNameserver{}, remainingMemory, err
 	}
 	if paramsLen > maxServiceParametersLen {
-		return DNSNameserver{}, fmt.Errorf("service parameters too long: %d bytes", paramsLen)
+		return DNSNameserver{}, remainingMemory, fmt.Errorf("service parameters too long: %d bytes", paramsLen)
+	}
+	if paramsLen > remainingMemory {
+		return DNSNameserver{}, remainingMemory, fmt.Errorf("parsing service parameters: %w", errDNSAssignMemoryLimit)
 	}
 	if paramsLen > uint64(r.Remaining()) {
-		return DNSNameserver{}, io.ErrUnexpectedEOF
+		return DNSNameserver{}, remainingMemory, io.ErrUnexpectedEOF
 	}
 	var serviceParameters []byte
 	if paramsLen > 0 {
 		serviceParameters = make([]byte, int(paramsLen))
 		if _, err := io.ReadFull(r, serviceParameters); err != nil {
-			return DNSNameserver{}, err
+			return DNSNameserver{}, remainingMemory, err
 		}
 	}
+	remainingMemory -= paramsLen
 	return DNSNameserver{
 		ServicePriority:          servicePriority,
 		IPv4Addresses:            ipv4Addresses,
 		IPv6Addresses:            ipv6Addresses,
 		AuthenticationDomainName: authenticationDomainName,
 		ServiceParameters:        serviceParameters,
-	}, nil
+	}, remainingMemory, nil
 }
 
-func parseDomain(r http3.CapsuleReader) (string, error) {
+func parseDomain(r http3.CapsuleReader, remainingMemory uint64) (string, uint64, error) {
 	l, err := quicvarint.Read(r)
 	if err != nil {
-		return "", err
+		return "", remainingMemory, err
 	}
 	if l > maxDomainNameLen {
-		return "", fmt.Errorf("domain name too long: %d bytes", l)
+		return "", remainingMemory, fmt.Errorf("domain name too long: %d bytes", l)
 	}
 	if l == 0 {
-		return "", nil
+		return "", remainingMemory, nil
 	}
-	b := make([]byte, int(l))
-	if _, err := io.ReadFull(r, b); err != nil {
-		return "", err
+	if l > remainingMemory {
+		return "", remainingMemory, errDNSAssignMemoryLimit
 	}
-	return string(b), nil
+	var b [maxDomainNameLen]byte
+	if _, err := io.ReadFull(r, b[:l]); err != nil {
+		return "", remainingMemory, err
+	}
+	return string(b[:l]), remainingMemory - l, nil
 }
 
 func (c *dnsAssignCapsule) append(b []byte) []byte {
