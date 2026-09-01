@@ -73,7 +73,7 @@ func TestCapsuleWritesAreCoalesced(t *testing.T) {
 	conn := newProxiedConn(&mockStream{
 		writeStarted: writeStarted,
 		written:      writes,
-	})
+	}, nil)
 	t.Cleanup(func() { conn.Close() })
 
 	// Block the first write. While it is blocked, the remaining calls stay queued,
@@ -120,7 +120,7 @@ func TestCapsuleWritesAreCoalesced(t *testing.T) {
 
 func TestIncomingDatagrams(t *testing.T) {
 	t.Run("empty packets", func(t *testing.T) {
-		conn := newProxiedConn(&mockStream{})
+		conn := newProxiedConn(&mockStream{}, nil)
 		require.ErrorContains(t,
 			conn.handleIncomingProxiedPacket([]byte{}),
 			"connect-ip: empty packet",
@@ -128,7 +128,7 @@ func TestIncomingDatagrams(t *testing.T) {
 	})
 
 	t.Run("invalid IP version", func(t *testing.T) {
-		conn := newProxiedConn(&mockStream{})
+		conn := newProxiedConn(&mockStream{}, nil)
 		data := make([]byte, 20)
 		data[0] = 5 << 4 // IPv5
 		require.ErrorContains(t,
@@ -138,7 +138,7 @@ func TestIncomingDatagrams(t *testing.T) {
 	})
 
 	t.Run("IPv4 packet too short", func(t *testing.T) {
-		conn := newProxiedConn(&mockStream{})
+		conn := newProxiedConn(&mockStream{}, nil)
 		data, err := (&ipv4.Header{
 			Src:      net.IPv4(1, 2, 3, 4),
 			Dst:      net.IPv4(159, 70, 42, 98),
@@ -153,7 +153,7 @@ func TestIncomingDatagrams(t *testing.T) {
 	})
 
 	t.Run("IPv6 packet too short", func(t *testing.T) {
-		conn := newProxiedConn(&mockStream{})
+		conn := newProxiedConn(&mockStream{}, nil)
 		require.ErrorContains(t,
 			conn.handleIncomingProxiedPacket(ipv6Header[:ipv6.HeaderLen-1]),
 			"connect-ip: malformed datagram: too short",
@@ -161,7 +161,7 @@ func TestIncomingDatagrams(t *testing.T) {
 	})
 
 	t.Run("invalid source address", func(t *testing.T) {
-		conn := newProxiedConn(&mockStream{})
+		conn := newProxiedConn(&mockStream{}, nil)
 		require.NoError(t, conn.AssignAddresses([]netip.Prefix{netip.MustParsePrefix("192.168.0.10/32")}))
 		hdr := &ipv4.Header{
 			Src:      net.IPv4(192, 168, 0, 11),
@@ -178,7 +178,7 @@ func TestIncomingDatagrams(t *testing.T) {
 	})
 
 	t.Run("invalid destination address", func(t *testing.T) {
-		conn := newProxiedConn(&mockStream{})
+		conn := newProxiedConn(&mockStream{}, nil)
 		require.NoError(t, conn.AssignAddresses([]netip.Prefix{netip.MustParsePrefix("192.168.0.10/32")}))
 		require.NoError(t, conn.AdvertiseRoute([]IPRoute{
 			{StartIP: netip.MustParseAddr("10.0.0.0"), EndIP: netip.MustParseAddr("10.1.2.3")},
@@ -204,7 +204,7 @@ func TestIncomingDatagrams(t *testing.T) {
 	})
 
 	t.Run("invalid IP protocol", func(t *testing.T) {
-		conn := newProxiedConn(&mockStream{})
+		conn := newProxiedConn(&mockStream{}, nil)
 		require.NoError(t, conn.AssignAddresses([]netip.Prefix{netip.MustParsePrefix("192.168.0.10/32")}))
 		require.NoError(t, conn.AdvertiseRoute([]IPRoute{
 			{StartIP: netip.MustParseAddr("10.0.0.0"), EndIP: netip.MustParseAddr("10.1.2.3"), IPProtocol: 42},
@@ -237,7 +237,7 @@ func TestIncomingDatagrams(t *testing.T) {
 
 	t.Run("packet from assigned address", func(t *testing.T) {
 		readChan := make(chan []byte, 1)
-		conn := newProxiedConn(&mockStream{toRead: readChan})
+		conn := newProxiedConn(&mockStream{toRead: readChan}, nil)
 
 		hdr := &ipv4.Header{
 			Src:      net.IPv4(159, 70, 42, 98),
@@ -265,7 +265,7 @@ func TestIncomingDatagrams(t *testing.T) {
 
 func TestSkipUnknownCapsule(t *testing.T) {
 	readChan := make(chan []byte, 1)
-	conn := newProxiedConn(&mockStream{toRead: readChan})
+	conn := newProxiedConn(&mockStream{toRead: readChan}, nil)
 
 	data := quicvarint.Append(nil, 42)
 	data = quicvarint.Append(data, 3)
@@ -283,7 +283,7 @@ func TestSkipUnknownCapsule(t *testing.T) {
 }
 
 func FuzzIncomingDatagram(f *testing.F) {
-	conn := newProxiedConn(&mockStream{})
+	conn := newProxiedConn(&mockStream{}, nil)
 	require.NoError(f, conn.AssignAddresses([]netip.Prefix{
 		netip.MustParsePrefix("192.168.0.0/16"),
 		netip.MustParsePrefix("2001:db8::0/64"),
@@ -311,7 +311,7 @@ func FuzzIncomingDatagram(f *testing.F) {
 
 func TestSendingDatagrams(t *testing.T) {
 	t.Run("invalid IP version", func(t *testing.T) {
-		conn := newProxiedConn(&mockStream{})
+		conn := newProxiedConn(&mockStream{}, nil)
 		data := make([]byte, 20)
 		data[0] = 5 << 4 // IPv5
 		_, err := conn.composeDatagram(data)
@@ -319,7 +319,7 @@ func TestSendingDatagrams(t *testing.T) {
 	})
 
 	t.Run("IPv4 packet too short", func(t *testing.T) {
-		conn := newProxiedConn(&mockStream{})
+		conn := newProxiedConn(&mockStream{}, nil)
 		data, err := (&ipv4.Header{
 			Src:      net.IPv4(1, 2, 3, 4),
 			Dst:      net.IPv4(159, 70, 42, 98),
@@ -332,7 +332,7 @@ func TestSendingDatagrams(t *testing.T) {
 	})
 
 	t.Run("IPv6 packet too short", func(t *testing.T) {
-		conn := newProxiedConn(&mockStream{})
+		conn := newProxiedConn(&mockStream{}, nil)
 		_, err := conn.composeDatagram(ipv6Header[:ipv6.HeaderLen-1])
 		require.ErrorContains(t, err, "connect-ip: IPv6 packet too short")
 	})
@@ -340,7 +340,7 @@ func TestSendingDatagrams(t *testing.T) {
 
 func TestSendLargeDatagrams(t *testing.T) {
 	str := &mockStream{sendDatagramErr: &quic.DatagramTooLargeError{}}
-	conn := newProxiedConn(str)
+	conn := newProxiedConn(str, nil)
 	data, err := (&ipv4.Header{
 		Version:  4,
 		Len:      20,

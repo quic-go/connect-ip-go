@@ -54,6 +54,7 @@ const minMTU = 1280
 // Conn is a connection that proxies IP packets over HTTP/3.
 type Conn struct {
 	str         http3Stream
+	closeConn   func() error
 	writeNotify chan struct{}
 
 	assignedAddressNotify chan struct{}
@@ -70,9 +71,10 @@ type Conn struct {
 	closeErr  error
 }
 
-func newProxiedConn(str http3Stream) *Conn {
+func newProxiedConn(str http3Stream, closeConn func() error) *Conn {
 	c := &Conn{
 		str:                   str,
+		closeConn:             closeConn,
 		writeNotify:           make(chan struct{}, 1),
 		assignedAddressNotify: make(chan struct{}, 1),
 		availableRoutesNotify: make(chan struct{}, 1),
@@ -450,9 +452,14 @@ func (c *Conn) Close() error {
 		c.closeErr = &CloseError{Remote: false}
 		close(c.closeChan)
 	}
+	closeConn := c.closeConn
+	c.closeConn = nil
 	c.mu.Unlock()
 	c.str.CancelRead(quic.StreamErrorCode(http3.ErrCodeNoError))
 	err := c.str.Close()
+	if closeConn != nil {
+		return errors.Join(err, closeConn())
+	}
 	return err
 }
 

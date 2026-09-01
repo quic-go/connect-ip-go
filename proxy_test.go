@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 	"github.com/yosida95/uritemplate/v3"
 	"golang.org/x/net/ipv4"
@@ -27,11 +26,12 @@ func setupConns(t *testing.T) (client, server *Conn) {
 	require.NoError(t, err)
 	t.Cleanup(func() { conn.Close() })
 
-	template := uritemplate.MustNew(fmt.Sprintf("https://localhost:%d/connect-ip", conn.LocalAddr().(*net.UDPAddr).Port))
+	template := uritemplate.MustNew(fmt.Sprintf("https://%s/connect-ip", conn.LocalAddr()))
 	connChan := make(chan *Conn, 1)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/connect-ip", func(w http.ResponseWriter, r *http.Request) {
-		mreq, err := ParseRequest(r, template)
+		require.Equal(t, "Bearer token", r.Header.Get("Authorization"))
+		mreq, err := ParseProxyRequest(r, template)
 		require.NoError(t, err)
 
 		conn, err := p.Proxy(w, mreq)
@@ -47,24 +47,16 @@ func setupConns(t *testing.T) (client, server *Conn) {
 	go func() { s.Serve(conn) }()
 	t.Cleanup(func() { s.Close() })
 
-	udpConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
-	require.NoError(t, err)
-	t.Cleanup(func() { udpConn.Close() })
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
-	cconn, err := quic.Dial(
-		ctx,
-		udpConn,
-		conn.LocalAddr(),
-		&tls.Config{ServerName: "localhost", RootCAs: certPool, NextProtos: []string{http3.NextProtoH3}},
-		&quic.Config{EnableDatagrams: true},
-	)
+	req, err := NewRequest(ctx, template)
 	require.NoError(t, err)
-	tr := &http3.Transport{EnableDatagrams: true}
-	t.Cleanup(func() { tr.Close() })
-
-	client, rsp, err := Dial(ctx, tr.NewClientConn(cconn), template)
+	req.Header().Set("Authorization", "Bearer token")
+	client, rsp, err := (&Transport{
+		TLSClientConfig: &tls.Config{ServerName: "localhost", RootCAs: certPool, NextProtos: []string{http3.NextProtoH3}},
+	}).Dial(req)
 	require.NoError(t, err)
+	t.Cleanup(func() { client.Close() })
 	require.Equal(t, rsp.StatusCode, http.StatusOK)
 
 	select {

@@ -5,31 +5,40 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 
+	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
-	"github.com/yosida95/uritemplate/v3"
 )
 
-// Dial dials a proxied connection to a target server.
-func Dial(ctx context.Context, conn *http3.ClientConn, template *uritemplate.Template) (*Conn, *http.Response, error) {
-	if len(template.Varnames()) > 0 {
-		return nil, nil, errors.New("connect-ip: IP flow forwarding not supported")
-	}
+// A ClientConn represents a connection to a single proxy server.
+// Multiple proxied connections can be established over a single ClientConn.
+type ClientConn struct {
+	clientConn *http3.ClientConn
+}
 
-	u, err := url.Parse(template.Raw())
-	if err != nil {
-		return nil, nil, fmt.Errorf("connect-ip: failed to parse URI: %w", err)
+// Dial dials a proxied connection over the proxy connection.
+func (c *ClientConn) Dial(req *Request) (*Conn, *http.Response, error) {
+	return c.dial(req, nil)
+}
+
+func (c *ClientConn) dial(req *Request, closeConn func() error) (*Conn, *http.Response, error) {
+	httpReq := req.httpRequest()
+	if httpReq.URL == nil {
+		return nil, nil, errors.New("connect-ip: request URL is nil")
+	}
+	if httpReq.Host == "" && httpReq.URL.Host == "" {
+		return nil, nil, errors.New("connect-ip: request needs a host")
 	}
 
 	select {
-	case <-ctx.Done():
-		return nil, nil, context.Cause(ctx)
-	case <-conn.Context().Done():
-		return nil, nil, context.Cause(conn.Context())
-	case <-conn.ReceivedSettings():
+	case <-httpReq.Context().Done():
+		return nil, nil, context.Cause(httpReq.Context())
+	case <-c.clientConn.Context().Done():
+		return nil, nil, context.Cause(c.clientConn.Context())
+	case <-c.clientConn.ReceivedSettings():
 	}
-	settings := conn.Settings()
+
+	settings := c.clientConn.Settings()
 	if !settings.EnableExtendedConnect {
 		return nil, nil, errors.New("connect-ip: server didn't enable Extended CONNECT")
 	}
@@ -37,17 +46,18 @@ func Dial(ctx context.Context, conn *http3.ClientConn, template *uritemplate.Tem
 		return nil, nil, errors.New("connect-ip: server didn't enable datagrams")
 	}
 
-	rstr, err := conn.OpenRequestStream(ctx)
+	rstr, err := c.clientConn.OpenRequestStream(httpReq.Context())
 	if err != nil {
 		return nil, nil, fmt.Errorf("connect-ip: failed to open request stream: %w", err)
 	}
-	if err := rstr.SendRequestHeader(&http.Request{
-		Method: http.MethodConnect,
-		Proto:  requestProtocol,
-		Host:   u.Host,
-		Header: http.Header{http3.CapsuleProtocolHeader: []string{capsuleProtocolHeaderValue}},
-		URL:    u,
-	}); err != nil {
+	var keepStream bool
+	defer func() {
+		if !keepStream {
+			rstr.CancelRead(quic.StreamErrorCode(http3.ErrCodeNoError))
+			rstr.CancelWrite(quic.StreamErrorCode(http3.ErrCodeNoError))
+		}
+	}()
+	if err := rstr.SendRequestHeader(httpReq); err != nil {
 		return nil, nil, fmt.Errorf("connect-ip: failed to send request: %w", err)
 	}
 	// TODO: optimistically return the connection
@@ -58,5 +68,6 @@ func Dial(ctx context.Context, conn *http3.ClientConn, template *uritemplate.Tem
 	if rsp.StatusCode < 200 || rsp.StatusCode > 299 {
 		return nil, rsp, fmt.Errorf("connect-ip: server responded with %d", rsp.StatusCode)
 	}
-	return newProxiedConn(rstr), rsp, nil
+	keepStream = true
+	return newProxiedConn(rstr, closeConn), rsp, nil
 }

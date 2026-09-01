@@ -179,9 +179,9 @@ func run(bindTo netip.AddrPort, remoteAddr netip.Addr, route netip.Prefix, ipPro
 	p := connectip.Proxy{}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/vpn", func(w http.ResponseWriter, r *http.Request) {
-		req, err := connectip.ParseRequest(r, template)
+		req, err := connectip.ParseProxyRequest(r, template)
 		if err != nil {
-			if perr, ok := errors.AsType[*connectip.RequestParseError](err); ok {
+			if perr, ok := errors.AsType[*connectip.ProxyRequestParseError](err); ok {
 				w.WriteHeader(perr.HTTPStatus)
 				return
 			}

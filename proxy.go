@@ -11,10 +11,10 @@ var contextIDZero = quicvarint.Append([]byte{}, 0)
 
 type Proxy struct{}
 
-func (s *Proxy) Proxy(w http.ResponseWriter, _ *Request) (*Conn, error) {
+func (s *Proxy) Proxy(w http.ResponseWriter, _ *ProxyRequest) (*Conn, error) {
 	w.Header().Set(http3.CapsuleProtocolHeader, capsuleProtocolHeaderValue)
 	w.WriteHeader(http.StatusOK)
 
 	str := w.(http3.HTTPStreamer).HTTPStream()
-	return newProxiedConn(str), nil
+	return newProxiedConn(str, nil), nil
 }
