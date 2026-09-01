@@ -1,6 +1,7 @@
 package connectip
 
 import (
+	"bytes"
 	"context"
 	"net"
 	"net/netip"
@@ -11,6 +12,7 @@ import (
 	"golang.org/x/net/ipv6"
 
 	"github.com/quic-go/quic-go"
+	"github.com/quic-go/quic-go/http3"
 	"github.com/quic-go/quic-go/quicvarint"
 
 	"github.com/stretchr/testify/require"
@@ -27,6 +29,8 @@ type mockStream struct {
 	reading         []byte
 	toRead          <-chan []byte
 	sendDatagramErr error
+	writeStarted    chan struct{}
+	written         chan<- []byte
 }
 
 var _ http3Stream = &mockStream{}
@@ -40,18 +44,78 @@ func (m *mockStream) Read(p []byte) (int, error) {
 	m.reading = m.reading[n:]
 	return n, nil
 }
-func (m *mockStream) CancelRead(quic.StreamErrorCode)   {}
-func (m *mockStream) Write(p []byte) (n int, err error) { return len(p), nil }
-func (m *mockStream) Close() error                      { return nil }
-func (m *mockStream) CancelWrite(quic.StreamErrorCode)  {}
-func (m *mockStream) Context() context.Context          { return context.Background() }
-func (m *mockStream) SetWriteDeadline(time.Time) error  { return nil }
-func (m *mockStream) SetReadDeadline(time.Time) error   { return nil }
-func (m *mockStream) SetDeadline(time.Time) error       { return nil }
-func (m *mockStream) SendDatagram(data []byte) error    { return m.sendDatagramErr }
+func (m *mockStream) CancelRead(quic.StreamErrorCode) {}
+func (m *mockStream) Write(p []byte) (int, error) {
+	if m.writeStarted != nil {
+		close(m.writeStarted)
+		m.writeStarted = nil
+	}
+	if m.written != nil {
+		m.written <- bytes.Clone(p)
+	}
+	return len(p), nil
+}
+func (m *mockStream) Close() error                     { return nil }
+func (m *mockStream) CancelWrite(quic.StreamErrorCode) {}
+func (m *mockStream) Context() context.Context         { return context.Background() }
+func (m *mockStream) SetWriteDeadline(time.Time) error { return nil }
+func (m *mockStream) SetReadDeadline(time.Time) error  { return nil }
+func (m *mockStream) SetDeadline(time.Time) error      { return nil }
+func (m *mockStream) SendDatagram(data []byte) error   { return m.sendDatagramErr }
 func (m *mockStream) ReceiveDatagram(ctx context.Context) ([]byte, error) {
 	<-ctx.Done()
 	return nil, ctx.Err()
+}
+
+func TestCapsuleWritesAreCoalesced(t *testing.T) {
+	writes := make(chan []byte)
+	writeStarted := make(chan struct{})
+	conn := newProxiedConn(&mockStream{
+		writeStarted: writeStarted,
+		written:      writes,
+	})
+	t.Cleanup(func() { conn.Close() })
+
+	// Block the first write. While it is blocked, the remaining calls stay queued,
+	// and the newer capsule of each type replaces the older one.
+	require.NoError(t, conn.AssignAddresses(nil))
+	select {
+	case <-writeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("capsule write did not start")
+	}
+
+	oldPrefix := netip.MustParsePrefix("192.0.2.1/32")
+	wantPrefix := netip.MustParsePrefix("2001:db8::/64")
+	oldIP := netip.MustParseAddr("192.0.2.1")
+	wantIP := netip.MustParseAddr("2001:db8::1")
+	oldRoute := IPRoute{StartIP: oldIP, EndIP: oldIP}
+	wantRoute := IPRoute{StartIP: wantIP, EndIP: wantIP}
+	require.NoError(t, conn.AssignAddresses([]netip.Prefix{oldPrefix}))
+	require.NoError(t, conn.AdvertiseRoute([]IPRoute{oldRoute}))
+	require.NoError(t, conn.AssignAddresses([]netip.Prefix{wantPrefix}))
+	require.NoError(t, conn.AdvertiseRoute([]IPRoute{wantRoute}))
+
+	var assignedAddresses []AssignedAddress
+	var advertisedRoutes []IPRoute
+	for range 3 {
+		typ, r, err := http3.NewCapsuleParser(bytes.NewReader(<-writes)).Next()
+		require.NoError(t, err)
+		switch typ {
+		case capsuleTypeAddressAssign:
+			capsule, err := parseAddressAssignCapsule(r)
+			require.NoError(t, err)
+			assignedAddresses = append(assignedAddresses, capsule.AssignedAddresses...)
+		case capsuleTypeRouteAdvertisement:
+			capsule, err := parseRouteAdvertisementCapsule(r)
+			require.NoError(t, err)
+			advertisedRoutes = append(advertisedRoutes, capsule.IPAddressRanges...)
+		default:
+			t.Fatalf("unexpected capsule type: %d", typ)
+		}
+	}
+	require.Equal(t, []AssignedAddress{{IPPrefix: wantPrefix}}, assignedAddresses)
+	require.Equal(t, []IPRoute{wantRoute}, advertisedRoutes)
 }
 
 func TestIncomingDatagrams(t *testing.T) {
@@ -98,9 +162,7 @@ func TestIncomingDatagrams(t *testing.T) {
 
 	t.Run("invalid source address", func(t *testing.T) {
 		conn := newProxiedConn(&mockStream{})
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		require.NoError(t, conn.AssignAddresses(ctx, []netip.Prefix{netip.MustParsePrefix("192.168.0.10/32")}))
+		require.NoError(t, conn.AssignAddresses([]netip.Prefix{netip.MustParsePrefix("192.168.0.10/32")}))
 		hdr := &ipv4.Header{
 			Src:      net.IPv4(192, 168, 0, 11),
 			Dst:      net.IPv4(159, 70, 42, 98),
@@ -117,10 +179,8 @@ func TestIncomingDatagrams(t *testing.T) {
 
 	t.Run("invalid destination address", func(t *testing.T) {
 		conn := newProxiedConn(&mockStream{})
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		require.NoError(t, conn.AssignAddresses(ctx, []netip.Prefix{netip.MustParsePrefix("192.168.0.10/32")}))
-		require.NoError(t, conn.AdvertiseRoute(ctx, []IPRoute{
+		require.NoError(t, conn.AssignAddresses([]netip.Prefix{netip.MustParsePrefix("192.168.0.10/32")}))
+		require.NoError(t, conn.AdvertiseRoute([]IPRoute{
 			{StartIP: netip.MustParseAddr("10.0.0.0"), EndIP: netip.MustParseAddr("10.1.2.3")},
 		}))
 		hdr := &ipv4.Header{
@@ -145,10 +205,8 @@ func TestIncomingDatagrams(t *testing.T) {
 
 	t.Run("invalid IP protocol", func(t *testing.T) {
 		conn := newProxiedConn(&mockStream{})
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		require.NoError(t, conn.AssignAddresses(ctx, []netip.Prefix{netip.MustParsePrefix("192.168.0.10/32")}))
-		require.NoError(t, conn.AdvertiseRoute(ctx, []IPRoute{
+		require.NoError(t, conn.AssignAddresses([]netip.Prefix{netip.MustParsePrefix("192.168.0.10/32")}))
+		require.NoError(t, conn.AdvertiseRoute([]IPRoute{
 			{StartIP: netip.MustParseAddr("10.0.0.0"), EndIP: netip.MustParseAddr("10.1.2.3"), IPProtocol: 42},
 		}))
 		hdr := &ipv4.Header{
@@ -226,13 +284,11 @@ func TestSkipUnknownCapsule(t *testing.T) {
 
 func FuzzIncomingDatagram(f *testing.F) {
 	conn := newProxiedConn(&mockStream{})
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	require.NoError(f, conn.AssignAddresses(ctx, []netip.Prefix{
+	require.NoError(f, conn.AssignAddresses([]netip.Prefix{
 		netip.MustParsePrefix("192.168.0.0/16"),
 		netip.MustParsePrefix("2001:db8::0/64"),
 	}))
-	require.NoError(f, conn.AdvertiseRoute(ctx, []IPRoute{
+	require.NoError(f, conn.AdvertiseRoute([]IPRoute{
 		{StartIP: netip.MustParseAddr("10.0.0.0"), EndIP: netip.MustParseAddr("10.1.2.3"), IPProtocol: 42},
 		{StartIP: netip.MustParseAddr("2001:db8:1::"), EndIP: netip.MustParseAddr("2001:db8:1::ffff"), IPProtocol: 42},
 	}))
