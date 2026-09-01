@@ -51,6 +51,10 @@ var (
 // On IPv6, the minimum MTU of a link is 1280 bytes.
 const minMTU = 1280
 
+// Capsules normally don't remain queued: they are written to the CONNECT stream
+// immediately. The queue only grows if the peer falls behind processing the stream.
+const maxQueuedCapsules = 128
+
 // Conn is a connection that proxies IP packets over HTTP/3.
 type Conn struct {
 	str         http3Stream
@@ -106,8 +110,7 @@ func newProxiedConn(str http3Stream, closeConn func() error) *Conn {
 }
 
 // AdvertiseRoute schedules an advertisement of the available routes to the peer.
-// It returns once the advertisement has been queued. A later call can replace a
-// queued advertisement that has not yet been written.
+// It returns once the advertisement has been queued.
 func (c *Conn) AdvertiseRoute(routes []IPRoute) error {
 	for _, route := range routes {
 		if route.StartIP.Compare(route.EndIP) == 1 {
@@ -116,20 +119,26 @@ func (c *Conn) AdvertiseRoute(routes []IPRoute) error {
 	}
 
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	if c.closeErr != nil {
-		return c.closeErr
+		err := c.closeErr
+		c.mu.Unlock()
+		return err
 	}
 	routes = slices.Clone(routes)
-	c.localRoutes = routes
-	c.queueCapsule(&routeAdvertisementCapsule{IPAddressRanges: routes})
+	err := c.queueCapsule(&routeAdvertisementCapsule{IPAddressRanges: routes})
+	if err == nil {
+		c.localRoutes = routes
+	}
+	c.mu.Unlock()
+	if err != nil {
+		_ = c.Close()
+		return err
+	}
 	return nil
 }
 
 // AssignAddresses schedules an assignment of address prefixes to the peer.
-// It returns once the assignment has been queued. A later call can replace a
-// queued assignment that has not yet been written.
+// It returns once the assignment has been queued.
 func (c *Conn) AssignAddresses(prefixes []netip.Prefix) error {
 	capsule := &addressAssignCapsule{AssignedAddresses: make([]AssignedAddress, 0, len(prefixes))}
 	for _, p := range prefixes {
@@ -137,42 +146,36 @@ func (c *Conn) AssignAddresses(prefixes []netip.Prefix) error {
 	}
 
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	if c.closeErr != nil {
-		return c.closeErr
+		err := c.closeErr
+		c.mu.Unlock()
+		return err
 	}
-	c.peerAddresses = slices.Clone(prefixes)
-	c.queueCapsule(capsule)
+	err := c.queueCapsule(capsule)
+	if err == nil {
+		c.peerAddresses = slices.Clone(prefixes)
+	}
+	c.mu.Unlock()
+	if err != nil {
+		_ = c.Close()
+		return err
+	}
 	return nil
 }
 
-func (c *Conn) queueCapsule(capsule appendable) {
-	// Replace the latest capsule of the same type.
-	// This bounds the memory commitment from queued capsules,
-	// as it limits the size of the queue to the number of capsule types.
-	for i, queued := range c.queuedCapsules {
-		switch queued.(type) {
-		case *addressAssignCapsule:
-			if _, ok := capsule.(*addressAssignCapsule); !ok {
-				continue
-			}
-		case *routeAdvertisementCapsule:
-			if _, ok := capsule.(*routeAdvertisementCapsule); !ok {
-				continue
-			}
-		default:
-			continue
-		}
-		c.queuedCapsules = slices.Delete(c.queuedCapsules, i, i+1)
-		break
+func (c *Conn) queueCapsule(capsule appendable) error {
+	if len(c.queuedCapsules) >= maxQueuedCapsules {
+		return errors.New("connect-ip: capsule queue full")
 	}
+	// Consecutive capsules of the same type could be coalesced here, but that
+	// micro-optimization is not worth the added complexity without evidence.
 	c.queuedCapsules = append(c.queuedCapsules, capsule)
 
 	select {
 	case c.writeNotify <- struct{}{}:
 	default:
 	}
+	return nil
 }
 
 // LocalPrefixes returns the prefixes that the peer currently assigned.
@@ -276,6 +279,7 @@ func (c *Conn) writeToStream() error {
 					break
 				}
 				capsule := c.queuedCapsules[0]
+				c.queuedCapsules[0] = nil
 				c.queuedCapsules = c.queuedCapsules[1:]
 				c.mu.Unlock()
 
