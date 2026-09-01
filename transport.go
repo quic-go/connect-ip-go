@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 
 	"github.com/quic-go/quic-go"
@@ -52,7 +53,11 @@ func (t *Transport) Dial(req *Request) (*Conn, *http.Response, error) {
 	if dial == nil {
 		dial = quic.DialAddr
 	}
-	conn, err := dial(httpReq.Context(), httpReq.URL.Host, tlsConf, quicConf)
+	addr := httpReq.URL.Host
+	if httpReq.URL.Port() == "" {
+		addr = net.JoinHostPort(httpReq.URL.Hostname(), "443")
+	}
+	conn, err := dial(httpReq.Context(), addr, tlsConf, quicConf)
 	if err != nil {
 		return nil, nil, fmt.Errorf("connect-ip: dialing QUIC connection failed: %w", err)
 	}

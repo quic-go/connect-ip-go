@@ -3,6 +3,7 @@ package connectip
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"net"
 	"testing"
 	"time"
@@ -18,6 +19,20 @@ func TestTransportRequiresDatagrams(t *testing.T) {
 	require.NoError(t, err)
 	_, _, err = (&Transport{QUICConfig: &quic.Config{}}).Dial(req)
 	require.ErrorContains(t, err, "QUICConfig needs to enable datagrams")
+}
+
+func TestTransportAddsDefaultPort(t *testing.T) {
+	req, err := NewRequest(t.Context(), uritemplate.MustNew("https://proxy.example/connect-ip"))
+	require.NoError(t, err)
+	var addr string
+	_, _, err = (&Transport{
+		DialAddr: func(_ context.Context, got string, _ *tls.Config, _ *quic.Config) (*quic.Conn, error) {
+			addr = got
+			return nil, errors.New("stop before dialing")
+		},
+	}).Dial(req)
+	require.Error(t, err)
+	require.Equal(t, "proxy.example:443", addr)
 }
 
 func TestNewClientConnRequiresDatagrams(t *testing.T) {
