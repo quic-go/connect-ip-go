@@ -57,15 +57,14 @@ type Conn struct {
 	closeConn   func() error
 	writeNotify chan struct{}
 
-	assignedAddressNotify chan struct{}
-	availableRoutesNotify chan struct{}
+	assignedAddressUpdates chan []netip.Prefix
+	availableRouteUpdates  chan []IPRoute
 
 	mu                sync.Mutex
 	queuedCapsules    []appendable
 	peerAddresses     []netip.Prefix // IP prefixes that we assigned to the peer
 	localRoutes       []IPRoute      // IP routes that we advertised to the peer
 	assignedAddresses []netip.Prefix
-	availableRoutes   []IPRoute
 
 	closeChan chan struct{}
 	closeErr  error
@@ -73,12 +72,12 @@ type Conn struct {
 
 func newProxiedConn(str http3Stream, closeConn func() error) *Conn {
 	c := &Conn{
-		str:                   str,
-		closeConn:             closeConn,
-		writeNotify:           make(chan struct{}, 1),
-		assignedAddressNotify: make(chan struct{}, 1),
-		availableRoutesNotify: make(chan struct{}, 1),
-		closeChan:             make(chan struct{}),
+		str:                    str,
+		closeConn:              closeConn,
+		writeNotify:            make(chan struct{}, 1),
+		assignedAddressUpdates: make(chan []netip.Prefix, 1),
+		availableRouteUpdates:  make(chan []IPRoute, 1),
+		closeChan:              make(chan struct{}),
 	}
 	go func() {
 		if err := c.readFromStream(); err != nil {
@@ -175,6 +174,16 @@ func (c *Conn) queueCapsule(capsule appendable) {
 	}
 }
 
+func queueLatest[T any](ch chan T, value T) {
+	for {
+		select {
+		case ch <- value:
+			return
+		case <-ch:
+		}
+	}
+}
+
 // LocalPrefixes returns the prefixes that the peer currently assigned.
 // Note that at any point during the connection, the peer can change the assignment.
 // It is therefore recommended to call this function in a loop.
@@ -184,10 +193,10 @@ func (c *Conn) LocalPrefixes(ctx context.Context) ([]netip.Prefix, error) {
 		return nil, ctx.Err()
 	case <-c.closeChan:
 		return nil, c.closeErr
-	case <-c.assignedAddressNotify:
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		return c.assignedAddresses, nil
+	case prefixes := <-c.assignedAddressUpdates:
+		// Callers are expected to treat returned prefixes as immutable.
+		// Clone them defensively so accidental mutation cannot change connection state.
+		return slices.Clone(prefixes), nil
 	}
 }
 
@@ -200,10 +209,8 @@ func (c *Conn) Routes(ctx context.Context) ([]IPRoute, error) {
 		return nil, ctx.Err()
 	case <-c.closeChan:
 		return nil, c.closeErr
-	case <-c.availableRoutesNotify:
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		return c.availableRoutes, nil
+	case routes := <-c.availableRouteUpdates:
+		return routes, nil
 	}
 }
 
@@ -228,10 +235,7 @@ func (c *Conn) readFromStream() error {
 			c.mu.Lock()
 			c.assignedAddresses = prefixes
 			c.mu.Unlock()
-			select {
-			case c.assignedAddressNotify <- struct{}{}:
-			default:
-			}
+			queueLatest(c.assignedAddressUpdates, prefixes)
 		case capsuleTypeAddressRequest:
 			if _, err := parseAddressRequestCapsule(cr); err != nil {
 				return err
@@ -242,13 +246,7 @@ func (c *Conn) readFromStream() error {
 			if err != nil {
 				return err
 			}
-			c.mu.Lock()
-			c.availableRoutes = capsule.IPAddressRanges
-			c.mu.Unlock()
-			select {
-			case c.availableRoutesNotify <- struct{}{}:
-			default:
-			}
+			queueLatest(c.availableRouteUpdates, capsule.IPAddressRanges)
 		default:
 			if err := cr.Discard(); err != nil {
 				return err
