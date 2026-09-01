@@ -12,7 +12,6 @@ import (
 	"golang.org/x/net/ipv6"
 
 	"github.com/quic-go/quic-go"
-	"github.com/quic-go/quic-go/http3"
 	"github.com/quic-go/quic-go/quicvarint"
 
 	"github.com/stretchr/testify/require"
@@ -67,7 +66,7 @@ func (m *mockStream) ReceiveDatagram(ctx context.Context) ([]byte, error) {
 	return nil, ctx.Err()
 }
 
-func TestCapsuleWritesAreCoalesced(t *testing.T) {
+func TestCapsuleQueueLimit(t *testing.T) {
 	writes := make(chan []byte)
 	writeStarted := make(chan struct{})
 	conn := newProxiedConn(&mockStream{
@@ -76,8 +75,6 @@ func TestCapsuleWritesAreCoalesced(t *testing.T) {
 	}, nil)
 	t.Cleanup(func() { conn.Close() })
 
-	// Block the first write. While it is blocked, the remaining calls stay queued,
-	// and the newer capsule of each type replaces the older one.
 	require.NoError(t, conn.AssignAddresses(nil))
 	select {
 	case <-writeStarted:
@@ -85,37 +82,14 @@ func TestCapsuleWritesAreCoalesced(t *testing.T) {
 		t.Fatal("capsule write did not start")
 	}
 
-	oldPrefix := netip.MustParsePrefix("192.0.2.1/32")
-	wantPrefix := netip.MustParsePrefix("2001:db8::/64")
-	oldIP := netip.MustParseAddr("192.0.2.1")
-	wantIP := netip.MustParseAddr("2001:db8::1")
-	oldRoute := IPRoute{StartIP: oldIP, EndIP: oldIP}
-	wantRoute := IPRoute{StartIP: wantIP, EndIP: wantIP}
-	require.NoError(t, conn.AssignAddresses([]netip.Prefix{oldPrefix}))
-	require.NoError(t, conn.AdvertiseRoute([]IPRoute{oldRoute}))
-	require.NoError(t, conn.AssignAddresses([]netip.Prefix{wantPrefix}))
-	require.NoError(t, conn.AdvertiseRoute([]IPRoute{wantRoute}))
-
-	var assignedAddresses []AssignedAddress
-	var advertisedRoutes []IPRoute
-	for range 3 {
-		typ, r, err := http3.NewCapsuleParser(bytes.NewReader(<-writes)).Next()
-		require.NoError(t, err)
-		switch typ {
-		case capsuleTypeAddressAssign:
-			capsule, err := parseAddressAssignCapsule(r)
-			require.NoError(t, err)
-			assignedAddresses = append(assignedAddresses, capsule.AssignedAddresses...)
-		case capsuleTypeRouteAdvertisement:
-			capsule, err := parseRouteAdvertisementCapsule(r)
-			require.NoError(t, err)
-			advertisedRoutes = append(advertisedRoutes, capsule.IPAddressRanges...)
-		default:
-			t.Fatalf("unexpected capsule type: %d", typ)
-		}
+	for range maxQueuedCapsules {
+		require.NoError(t, conn.AssignAddresses(nil))
 	}
-	require.Equal(t, []AssignedAddress{{IPPrefix: wantPrefix}}, assignedAddresses)
-	require.Equal(t, []IPRoute{wantRoute}, advertisedRoutes)
+	require.ErrorContains(t, conn.AssignAddresses(nil), "capsule queue full")
+	require.ErrorIs(t, conn.AssignAddresses(nil), net.ErrClosed)
+
+	// Let the writer finish the in-progress write and observe the closed connection.
+	<-writes
 }
 
 func TestIncomingDatagrams(t *testing.T) {
