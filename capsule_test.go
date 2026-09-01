@@ -397,6 +397,13 @@ func TestWriteDNSAssignCapsule(t *testing.T) {
 }
 
 func TestParseDNSAssignCapsuleInvalid(t *testing.T) {
+	t.Run("capsule size limit", func(t *testing.T) {
+		payload := make([]byte, maxDNSAssignCapsuleSize+1)
+
+		_, err := parseDNSAssignCapsule(newCapsuleReader(t, capsuleTypeDNSAssign, payload))
+		require.ErrorContains(t, err, "DNS_ASSIGN capsule too large")
+	})
+
 	t.Run("zero service priority", func(t *testing.T) {
 		payload := quicvarint.Append(nil, 1)
 		payload = append(payload, 0, 0)
@@ -450,6 +457,21 @@ func TestParseDNSAssignCapsuleInvalid(t *testing.T) {
 
 		_, err := parseDNSAssignCapsule(newCapsuleReader(t, capsuleTypeDNSAssign, payload))
 		require.ErrorContains(t, err, "service parameters too long")
+	})
+
+	t.Run("truncated service parameters", func(t *testing.T) {
+		payload := quicvarint.Append(nil, 1) // Nameserver Count
+		payload = binary.BigEndian.AppendUint16(payload, 1)
+		payload = quicvarint.Append(payload, 0) // IPv4 Address Count
+		payload = quicvarint.Append(payload, 0) // IPv6 Address Count
+		payload = appendDomain(payload, "")
+		payload = quicvarint.Append(payload, 10)
+		payload = append(payload, "short"...)
+		r := newCapsuleReader(t, capsuleTypeDNSAssign, payload)
+
+		_, err := parseDNSAssignCapsule(r)
+		require.ErrorIs(t, err, io.ErrUnexpectedEOF)
+		require.Equal(t, int64(len("short")), r.Remaining())
 	})
 }
 

@@ -276,7 +276,11 @@ type dnsAssignCapsule struct {
 	DNSConfigurations []DNSConfiguration
 }
 
-func parseCounted[T any](r quicvarint.Reader, parse func(quicvarint.Reader) (T, error)) ([]T, error) {
+// This limits the wire size, not memory use. Parsing can amplify memory use by
+// roughly 50x, and the limit is chosen accordingly.
+const maxDNSAssignCapsuleSize = 32 << 10
+
+func parseCounted[T any](r http3.CapsuleReader, parse func(http3.CapsuleReader) (T, error)) ([]T, error) {
 	count, err := quicvarint.Read(r)
 	if err != nil {
 		return nil, err
@@ -293,6 +297,9 @@ func parseCounted[T any](r quicvarint.Reader, parse func(quicvarint.Reader) (T, 
 }
 
 func parseDNSAssignCapsule(r http3.CapsuleReader) (*dnsAssignCapsule, error) {
+	if r.Remaining() > maxDNSAssignCapsuleSize {
+		return nil, fmt.Errorf("DNS_ASSIGN capsule too large: %d bytes (maximum %d)", r.Remaining(), maxDNSAssignCapsuleSize)
+	}
 	var configurations []DNSConfiguration
 	for r.Remaining() > 0 {
 		nameservers, err := parseCounted(r, parseDNSNameserver)
@@ -320,7 +327,7 @@ func parseDNSAssignCapsule(r http3.CapsuleReader) (*dnsAssignCapsule, error) {
 	return &dnsAssignCapsule{DNSConfigurations: configurations}, nil
 }
 
-func parseDNSNameserver(r quicvarint.Reader) (DNSNameserver, error) {
+func parseDNSNameserver(r http3.CapsuleReader) (DNSNameserver, error) {
 	var priorityBytes [2]byte
 	if _, err := io.ReadFull(r, priorityBytes[:]); err != nil {
 		return DNSNameserver{}, err
@@ -363,6 +370,9 @@ func parseDNSNameserver(r quicvarint.Reader) (DNSNameserver, error) {
 	if paramsLen > maxServiceParametersLen {
 		return DNSNameserver{}, fmt.Errorf("service parameters too long: %d bytes", paramsLen)
 	}
+	if paramsLen > uint64(r.Remaining()) {
+		return DNSNameserver{}, io.ErrUnexpectedEOF
+	}
 	var serviceParameters []byte
 	if paramsLen > 0 {
 		serviceParameters = make([]byte, int(paramsLen))
@@ -379,7 +389,7 @@ func parseDNSNameserver(r quicvarint.Reader) (DNSNameserver, error) {
 	}, nil
 }
 
-func parseDomain(r quicvarint.Reader) (string, error) {
+func parseDomain(r http3.CapsuleReader) (string, error) {
 	l, err := quicvarint.Read(r)
 	if err != nil {
 		return "", err
