@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net"
 	"net/http"
 	"net/netip"
 	"os"
@@ -119,35 +118,27 @@ func establishConn(proxyAddr netip.AddrPort, keyLog io.Writer) (*water.Interface
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	udpConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(0, 0, 0, 0)})
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to listen on UDP: %w", err)
-	}
-
-	conn, err := quic.Dial(
-		ctx,
-		udpConn,
-		&net.UDPAddr{IP: proxyAddr.Addr().AsSlice(), Port: int(proxyAddr.Port())},
-		&tls.Config{
+	tr := &connectip.Transport{
+		TLSClientConfig: &tls.Config{
 			ServerName:         "proxy",
 			InsecureSkipVerify: true,
 			NextProtos:         []string{http3.NextProtoH3},
 			KeyLogWriter:       keyLog,
 		},
-		&quic.Config{
+		QUICConfig: &quic.Config{
 			EnableDatagrams:   true,
 			InitialPacketSize: 1350,
 		},
-	)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to dial QUIC connection: %w", err)
+		DialAddr: func(ctx context.Context, _ string, tlsConf *tls.Config, quicConf *quic.Config) (*quic.Conn, error) {
+			return quic.DialAddr(ctx, proxyAddr.String(), tlsConf, quicConf)
+		},
 	}
-
-	tr := &http3.Transport{EnableDatagrams: true}
-	hconn := tr.NewClientConn(conn)
-
 	template := uritemplate.MustNew(fmt.Sprintf("https://proxy:%d/vpn", proxyAddr.Port()))
-	ipconn, rsp, err := connectip.Dial(ctx, hconn, template)
+	req, err := connectip.NewRequest(ctx, template)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create connect-ip request: %w", err)
+	}
+	ipconn, rsp, err := tr.Dial(req)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to dial connect-ip connection: %w", err)
 	}
