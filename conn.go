@@ -29,11 +29,6 @@ func (e *CloseError) Is(target error) bool { return target == net.ErrClosed }
 
 type appendable interface{ append([]byte) []byte }
 
-type writeCapsule struct {
-	capsule appendable
-	result  chan error
-}
-
 const (
 	ipProtoICMP   = 1
 	ipProtoICMPv6 = 58
@@ -58,13 +53,14 @@ const minMTU = 1280
 
 // Conn is a connection that proxies IP packets over HTTP/3.
 type Conn struct {
-	str    http3Stream
-	writes chan writeCapsule
+	str         http3Stream
+	writeNotify chan struct{}
 
 	assignedAddressNotify chan struct{}
 	availableRoutesNotify chan struct{}
 
 	mu                sync.Mutex
+	queuedCapsules    []appendable
 	peerAddresses     []netip.Prefix // IP prefixes that we assigned to the peer
 	localRoutes       []IPRoute      // IP routes that we advertised to the peer
 	assignedAddresses []netip.Prefix
@@ -77,7 +73,7 @@ type Conn struct {
 func newProxiedConn(str http3Stream) *Conn {
 	c := &Conn{
 		str:                   str,
-		writes:                make(chan writeCapsule),
+		writeNotify:           make(chan struct{}, 1),
 		assignedAddressNotify: make(chan struct{}, 1),
 		availableRoutesNotify: make(chan struct{}, 1),
 		closeChan:             make(chan struct{}),
@@ -107,52 +103,73 @@ func newProxiedConn(str http3Stream) *Conn {
 	return c
 }
 
-// AdvertiseRoute informs the peer about available routes.
-// This function can be called multiple times, but only the routes from the most recent call will be active.
-// Previous route advertisements are overwritten by each new call to this function.
-func (c *Conn) AdvertiseRoute(ctx context.Context, routes []IPRoute) error {
+// AdvertiseRoute schedules an advertisement of the available routes to the peer.
+// It returns once the advertisement has been queued. A later call can replace a
+// queued advertisement that has not yet been written.
+func (c *Conn) AdvertiseRoute(routes []IPRoute) error {
 	for _, route := range routes {
 		if route.StartIP.Compare(route.EndIP) == 1 {
 			return fmt.Errorf("invalid route advertising start_ip: %s larger than %s", route.StartIP, route.EndIP)
 		}
 	}
+
 	c.mu.Lock()
-	c.localRoutes = slices.Clone(routes)
-	c.mu.Unlock()
-	return c.sendCapsule(ctx, &routeAdvertisementCapsule{IPAddressRanges: routes})
+	defer c.mu.Unlock()
+
+	if c.closeErr != nil {
+		return c.closeErr
+	}
+	routes = slices.Clone(routes)
+	c.localRoutes = routes
+	c.queueCapsule(&routeAdvertisementCapsule{IPAddressRanges: routes})
+	return nil
 }
 
-// AssignAddresses assigned address prefixes to the peer.
-// This function can be called multiple times, but only the addresses from the most recent call will be active.
-// Previous address assignments are overwritten by each new call to this function.
-func (c *Conn) AssignAddresses(ctx context.Context, prefixes []netip.Prefix) error {
-	c.mu.Lock()
-	c.peerAddresses = slices.Clone(prefixes)
-	c.mu.Unlock()
+// AssignAddresses schedules an assignment of address prefixes to the peer.
+// It returns once the assignment has been queued. A later call can replace a
+// queued assignment that has not yet been written.
+func (c *Conn) AssignAddresses(prefixes []netip.Prefix) error {
 	capsule := &addressAssignCapsule{AssignedAddresses: make([]AssignedAddress, 0, len(prefixes))}
 	for _, p := range prefixes {
 		capsule.AssignedAddresses = append(capsule.AssignedAddresses, AssignedAddress{IPPrefix: p})
 	}
-	return c.sendCapsule(ctx, capsule)
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.closeErr != nil {
+		return c.closeErr
+	}
+	c.peerAddresses = slices.Clone(prefixes)
+	c.queueCapsule(capsule)
+	return nil
 }
 
-func (c *Conn) sendCapsule(ctx context.Context, capsule appendable) error {
-	res := make(chan error, 1)
-	select {
-	case c.writes <- writeCapsule{
-		capsule: capsule,
-		result:  res,
-	}:
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case err := <-res:
-			return err
+func (c *Conn) queueCapsule(capsule appendable) {
+	// Replace the latest capsule of the same type.
+	// This bounds the memory commitment from queued capsules,
+	// as it limits the size of the queue to the number of capsule types.
+	for i, queued := range c.queuedCapsules {
+		switch queued.(type) {
+		case *addressAssignCapsule:
+			if _, ok := capsule.(*addressAssignCapsule); !ok {
+				continue
+			}
+		case *routeAdvertisementCapsule:
+			if _, ok := capsule.(*routeAdvertisementCapsule); !ok {
+				continue
+			}
+		default:
+			continue
 		}
-	case <-c.closeChan:
-		return c.closeErr
-	case <-ctx.Done():
-		return ctx.Err()
+		c.queuedCapsules = slices.Delete(c.queuedCapsules, i, i+1)
+		break
+	}
+	c.queuedCapsules = append(c.queuedCapsules, capsule)
+
+	select {
+	case c.writeNotify <- struct{}{}:
+	default:
 	}
 }
 
@@ -244,15 +261,26 @@ func (c *Conn) writeToStream() error {
 		select {
 		case <-c.closeChan:
 			return c.closeErr
-		case req, ok := <-c.writes:
-			if !ok {
-				return nil
-			}
-			buf = req.capsule.append(buf[:0])
-			_, err := c.str.Write(buf)
-			req.result <- err
-			if err != nil {
-				return err
+		case <-c.writeNotify:
+			for {
+				c.mu.Lock()
+				if c.closeErr != nil {
+					err := c.closeErr
+					c.mu.Unlock()
+					return err
+				}
+				if len(c.queuedCapsules) == 0 {
+					c.mu.Unlock()
+					break
+				}
+				capsule := c.queuedCapsules[0]
+				c.queuedCapsules = c.queuedCapsules[1:]
+				c.mu.Unlock()
+
+				buf = capsule.append(buf[:0])
+				if _, err := c.str.Write(buf); err != nil {
+					return err
+				}
 			}
 		}
 	}

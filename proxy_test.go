@@ -88,13 +88,13 @@ func TestAddressAssignment(t *testing.T) {
 	defer cancel()
 	pref1 := netip.MustParsePrefix("1.1.1.0/24")
 	pref2 := netip.MustParsePrefix("2001:db8::/64")
-	require.NoError(t, client.AssignAddresses(ctx, []netip.Prefix{pref1, pref2}))
+	require.NoError(t, client.AssignAddresses([]netip.Prefix{pref1, pref2}))
 	routes, err := server.LocalPrefixes(ctx)
 	require.NoError(t, err)
 	require.Equal(t, []netip.Prefix{pref1, pref2}, routes)
 
 	// addresses are replaced once a new capsule is received
-	require.NoError(t, client.AssignAddresses(ctx, []netip.Prefix{}))
+	require.NoError(t, client.AssignAddresses([]netip.Prefix{}))
 	routes, err = server.LocalPrefixes(ctx)
 	require.NoError(t, err)
 	require.Empty(t, routes)
@@ -114,14 +114,14 @@ func TestRouteAdvertisement(t *testing.T) {
 
 	// refuse to advertise invalid routes
 	require.ErrorContains(t,
-		client.AdvertiseRoute(ctx, []IPRoute{
+		client.AdvertiseRoute([]IPRoute{
 			{StartIP: netip.MustParseAddr("1.1.1.2"), EndIP: netip.MustParseAddr("1.1.1.1"), IPProtocol: 42},
 		}),
 		"invalid route advertising start_ip: 1.1.1.2 larger than 1.1.1.1",
 	)
 
 	// advertise some routes and make sure they're received
-	require.NoError(t, client.AdvertiseRoute(ctx, []IPRoute{
+	require.NoError(t, client.AdvertiseRoute([]IPRoute{
 		{StartIP: netip.MustParseAddr("1.1.1.1"), EndIP: netip.MustParseAddr("2.2.2.2"), IPProtocol: 42},
 		{StartIP: netip.MustParseAddr("2001:db8::1"), EndIP: netip.MustParseAddr("2001:db8::100"), IPProtocol: 24},
 	}))
@@ -133,7 +133,7 @@ func TestRouteAdvertisement(t *testing.T) {
 	}, routes)
 
 	// routes are replaced once a new capsule is received
-	require.NoError(t, client.AdvertiseRoute(ctx, []IPRoute{}))
+	require.NoError(t, client.AdvertiseRoute([]IPRoute{}))
 	routes, err = server.Routes(ctx)
 	require.NoError(t, err)
 	require.Empty(t, routes)
@@ -142,10 +142,8 @@ func TestRouteAdvertisement(t *testing.T) {
 func TestTTLs(t *testing.T) {
 	t.Run("IPv4", func(t *testing.T) {
 		client, server := setupConns(t)
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
-		defer cancel()
-		require.NoError(t, server.AssignAddresses(ctx, []netip.Prefix{netip.MustParsePrefix("192.168.1.1/32")}))
-		require.NoError(t, server.AdvertiseRoute(ctx, []IPRoute{
+		require.NoError(t, server.AssignAddresses([]netip.Prefix{netip.MustParsePrefix("192.168.1.1/32")}))
+		require.NoError(t, server.AdvertiseRoute([]IPRoute{
 			{StartIP: netip.MustParseAddr("0.0.0.0"), EndIP: netip.MustParseAddr("255.255.255.255")},
 		}))
 
@@ -190,10 +188,8 @@ func TestTTLs(t *testing.T) {
 
 	t.Run("IPv6", func(t *testing.T) {
 		client, server := setupConns(t)
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
-		defer cancel()
-		require.NoError(t, server.AssignAddresses(ctx, []netip.Prefix{netip.MustParsePrefix("2001:db8::1/128")}))
-		require.NoError(t, server.AdvertiseRoute(ctx, []IPRoute{
+		require.NoError(t, server.AssignAddresses([]netip.Prefix{netip.MustParsePrefix("2001:db8::1/128")}))
+		require.NoError(t, server.AdvertiseRoute([]IPRoute{
 			{StartIP: netip.MustParseAddr("::"), EndIP: netip.MustParseAddr("ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff")},
 		}))
 
@@ -264,11 +260,11 @@ func TestClosing(t *testing.T) {
 	_, err = client.Routes(context.Background())
 	require.ErrorIs(t, err, net.ErrClosed)
 	require.ErrorIs(t,
-		client.AssignAddresses(context.Background(), []netip.Prefix{netip.MustParsePrefix("1.1.1.0/24")}),
+		client.AssignAddresses([]netip.Prefix{netip.MustParsePrefix("1.1.1.0/24")}),
 		net.ErrClosed,
 	)
 	require.ErrorIs(t,
-		client.AdvertiseRoute(context.Background(), []IPRoute{
+		client.AdvertiseRoute([]IPRoute{
 			{StartIP: netip.MustParseAddr("1.1.1.0"), EndIP: netip.MustParseAddr("1.1.1.1"), IPProtocol: 42},
 		}),
 		net.ErrClosed,

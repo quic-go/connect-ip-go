@@ -3,7 +3,6 @@
 package main
 
 import (
-	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -14,7 +13,6 @@ import (
 	"os"
 	"strconv"
 	"syscall"
-	"time"
 
 	"golang.org/x/sys/unix"
 
@@ -212,13 +210,10 @@ func run(bindTo netip.AddrPort, remoteAddr netip.Addr, route netip.Prefix, ipPro
 }
 
 func handleConn(conn *connectip.Conn, addr netip.Addr, route netip.Prefix, ipProtocol uint8) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	if err := conn.AssignAddresses(ctx, []netip.Prefix{netip.PrefixFrom(addr, addr.BitLen())}); err != nil {
+	if err := conn.AssignAddresses([]netip.Prefix{netip.PrefixFrom(addr, addr.BitLen())}); err != nil {
 		return fmt.Errorf("failed to assign addresses: %w", err)
 	}
-	if err := conn.AdvertiseRoute(ctx, []connectip.IPRoute{
+	if err := conn.AdvertiseRoute([]connectip.IPRoute{
 		{StartIP: route.Addr(), EndIP: utils.LastIP(route), IPProtocol: ipProtocol},
 	}); err != nil {
 		return fmt.Errorf("failed to advertise route: %w", err)
