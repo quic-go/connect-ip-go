@@ -27,8 +27,6 @@ type CloseError struct {
 func (e *CloseError) Error() string        { return net.ErrClosed.Error() }
 func (e *CloseError) Is(target error) bool { return target == net.ErrClosed }
 
-type appendable interface{ append([]byte) []byte }
-
 const (
 	ipProtoICMP   = 1
 	ipProtoICMPv6 = 58
@@ -64,8 +62,10 @@ type Conn struct {
 	assignedAddressUpdates chan []netip.Prefix
 	availableRouteUpdates  chan []IPRoute
 
-	mu                sync.Mutex
-	queuedCapsules    []appendable
+	mu sync.Mutex
+	// queuedCapsules contains the capsules serialized by the send methods. This
+	// allows callers to modify the values passed to a send method after it returns.
+	queuedCapsules    [][]byte
 	peerAddresses     []netip.Prefix // IP prefixes that we assigned to the peer
 	localRoutes       []IPRoute      // IP routes that we advertised to the peer
 	assignedAddresses []netip.Prefix
@@ -124,7 +124,7 @@ func (c *Conn) AdvertiseRoute(routes []IPRoute) error {
 		return err
 	}
 	routes = slices.Clone(routes)
-	err := c.queueCapsule(&routeAdvertisementCapsule{IPAddressRanges: routes})
+	err := c.queueCapsule((&routeAdvertisementCapsule{IPAddressRanges: routes}).append(nil))
 	if err == nil {
 		c.localRoutes = routes
 	}
@@ -150,7 +150,7 @@ func (c *Conn) AssignAddresses(prefixes []netip.Prefix) error {
 		c.mu.Unlock()
 		return err
 	}
-	err := c.queueCapsule(capsule)
+	err := c.queueCapsule(capsule.append(nil))
 	if err == nil {
 		c.peerAddresses = slices.Clone(prefixes)
 	}
@@ -162,13 +162,13 @@ func (c *Conn) AssignAddresses(prefixes []netip.Prefix) error {
 	return nil
 }
 
-func (c *Conn) queueCapsule(capsule appendable) error {
+func (c *Conn) queueCapsule(capsuleData []byte) error {
 	if len(c.queuedCapsules) >= maxQueuedCapsules {
 		return errors.New("connect-ip: capsule queue full")
 	}
 	// Consecutive capsules of the same type could be coalesced here, but that
 	// micro-optimization is not worth the added complexity without evidence.
-	c.queuedCapsules = append(c.queuedCapsules, capsule)
+	c.queuedCapsules = append(c.queuedCapsules, capsuleData)
 
 	select {
 	case c.writeNotify <- struct{}{}:
@@ -259,7 +259,6 @@ func (c *Conn) readFromStream() error {
 }
 
 func (c *Conn) writeToStream() error {
-	buf := make([]byte, 0, 1024)
 	for {
 		select {
 		case <-c.closeChan:
@@ -276,13 +275,12 @@ func (c *Conn) writeToStream() error {
 					c.mu.Unlock()
 					break
 				}
-				capsule := c.queuedCapsules[0]
+				capsuleData := c.queuedCapsules[0]
 				c.queuedCapsules[0] = nil
 				c.queuedCapsules = c.queuedCapsules[1:]
 				c.mu.Unlock()
 
-				buf = capsule.append(buf[:0])
-				if _, err := c.str.Write(buf); err != nil {
+				if _, err := c.str.Write(capsuleData); err != nil {
 					return err
 				}
 			}
