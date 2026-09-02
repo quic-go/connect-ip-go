@@ -169,6 +169,12 @@ func (c *Conn) AssignAddresses(prefixes []netip.Prefix) error {
 // SendDNSConfiguration schedules a DNS configuration update to the peer.
 // It returns once the update has been queued. The update supersedes the DNS
 // configuration previously sent on this connection.
+//
+// To avoid leaking DNS traffic outside the tunnel, the application is responsible
+// for advertising the corresponding routes before calling this method. See
+// [Section 5 of draft-ietf-masque-connect-ip-dns-06].
+//
+// [Section 5 of draft-ietf-masque-connect-ip-dns-06]: https://datatracker.ietf.org/doc/html/draft-ietf-masque-connect-ip-dns-06#section-5
 func (c *Conn) SendDNSConfiguration(configurations []DNSConfiguration) error {
 	for _, config := range configurations {
 		if err := config.validate(); err != nil {
