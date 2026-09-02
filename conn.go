@@ -210,9 +210,6 @@ func (c *Conn) SendPREF64Configuration(prefixes []netip.Prefix) error {
 		default:
 			return fmt.Errorf("invalid NAT64 prefix %d: invalid prefix length %d", i, prefix.Bits())
 		}
-		if prefix != prefix.Masked() {
-			return fmt.Errorf("invalid NAT64 prefix %d: lower bits not covered by prefix length are not all zero", i)
-		}
 	}
 	return c.sendCapsule((&pref64Capsule{Prefixes: prefixes}).append(nil))
 }

@@ -185,6 +185,7 @@ func TestPREF64Configuration(t *testing.T) {
 	prefixes := []netip.Prefix{
 		netip.MustParsePrefix("64:ff9b::/96"),
 		netip.MustParsePrefix("2001:db8:1200::/40"),
+		netip.MustParsePrefix("2001:db8:0:0:1::/32"),
 	}
 
 	t.Run("send", func(t *testing.T) {

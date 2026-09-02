@@ -496,13 +496,13 @@ func TestParseDNSAssignCapsuleInvalid(t *testing.T) {
 
 func TestParsePREF64Capsule(t *testing.T) {
 	data := []byte{96, 0x00, 0x64, 0xff, 0x9b, 0, 0, 0, 0, 0, 0, 0, 0}
-	data = append(data, 32, 0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0)
+	data = append(data, 32, 0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 1, 0, 0)
 
 	capsule, err := parsePREF64Capsule(newCapsuleReader(t, capsuleTypePREF64, data))
 	require.NoError(t, err)
 	require.Equal(t, &pref64Capsule{Prefixes: []netip.Prefix{
 		netip.MustParsePrefix("64:ff9b::/96"),
-		netip.MustParsePrefix("2001:db8::/32"),
+		netip.MustParsePrefix("2001:db8:0:0:1::/32"),
 	}}, capsule)
 }
 
@@ -553,12 +553,6 @@ func TestParsePREF64CapsuleInvalid(t *testing.T) {
 	t.Run("invalid prefix length", func(t *testing.T) {
 		_, err := parsePREF64Capsule(newCapsuleReader(t, capsuleTypePREF64, make([]byte, 13)))
 		require.ErrorContains(t, err, "invalid NAT64 prefix length: 0")
-	})
-
-	t.Run("non-zero host bits", func(t *testing.T) {
-		data := []byte{64, 0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 1, 0, 0, 0}
-		_, err := parsePREF64Capsule(newCapsuleReader(t, capsuleTypePREF64, data))
-		require.ErrorContains(t, err, "lower bits not covered")
 	})
 
 	t.Run("IPv4-mapped IPv6 prefix", func(t *testing.T) {
