@@ -450,11 +450,18 @@ type pref64Capsule struct {
 	Prefixes []netip.Prefix
 }
 
+const maxPREF64Prefixes = 64
+
 func parsePREF64Capsule(r http3.CapsuleReader) (*pref64Capsule, error) {
+	// each prefix consists of a 1-byte prefix length and 12 bytes of address
 	if r.Remaining()%13 != 0 {
 		return nil, errors.New("PREF64 capsule length is not a multiple of 13")
 	}
-	var prefixes []netip.Prefix
+	numPrefixes := r.Remaining() / 13
+	if numPrefixes > maxPREF64Prefixes {
+		return nil, fmt.Errorf("PREF64 capsule contains too many prefixes: %d (maximum %d)", numPrefixes, maxPREF64Prefixes)
+	}
+	prefixes := make([]netip.Prefix, 0, numPrefixes)
 	for r.Remaining() > 0 {
 		prefixLen, err := r.ReadByte()
 		if err != nil {

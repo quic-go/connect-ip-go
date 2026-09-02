@@ -487,6 +487,25 @@ func TestParsePREF64Capsule(t *testing.T) {
 	}}, capsule)
 }
 
+func TestParsePREF64CapsuleLimit(t *testing.T) {
+	prefix := []byte{96, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+
+	t.Run("at limit", func(t *testing.T) {
+		capsule, err := parsePREF64Capsule(newCapsuleReader(
+			t, capsuleTypePREF64, bytes.Repeat(prefix, maxPREF64Prefixes),
+		))
+		require.NoError(t, err)
+		require.Len(t, capsule.Prefixes, maxPREF64Prefixes)
+	})
+
+	t.Run("over limit", func(t *testing.T) {
+		_, err := parsePREF64Capsule(newCapsuleReader(
+			t, capsuleTypePREF64, bytes.Repeat(prefix, maxPREF64Prefixes+1),
+		))
+		require.ErrorContains(t, err, "PREF64 capsule contains too many prefixes: 65 (maximum 64)")
+	})
+}
+
 func TestWritePREF64Capsule(t *testing.T) {
 	capsule := &pref64Capsule{Prefixes: []netip.Prefix{
 		netip.MustParsePrefix("64:ff9b::/96"),
