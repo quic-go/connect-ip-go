@@ -36,6 +36,18 @@ func TestDNSConfigurationDomainValidation(t *testing.T) {
 			},
 		},
 		{
+			name: "underscore label",
+			configuration: DNSConfiguration{
+				SearchDomains: []string{"_msdcs.corp.example"},
+			},
+		},
+		{
+			name: "trailing root dot",
+			configuration: DNSConfiguration{
+				SearchDomains: []string{"example.com."},
+			},
+		},
+		{
 			name: "authentication U-label",
 			configuration: DNSConfiguration{Nameservers: []DNSNameserver{{
 				ServicePriority:          1,
@@ -68,6 +80,13 @@ func TestDNSConfigurationDomainValidation(t *testing.T) {
 			name: "invalid A-label",
 			configuration: DNSConfiguration{
 				SearchDomains: []string{"xn--.example"},
+			},
+			err: "invalid search domain name: must be a valid IDNA A-label",
+		},
+		{
+			name: "leading hyphen",
+			configuration: DNSConfiguration{
+				SearchDomains: []string{"-resolver.example"},
 			},
 			err: "invalid search domain name: must be a valid IDNA A-label",
 		},

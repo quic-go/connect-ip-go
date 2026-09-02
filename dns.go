@@ -50,6 +50,7 @@ type DNSConfiguration struct {
 
 var dnsNameProfile = idna.New(
 	idna.MapForLookup(),
+	idna.StrictDomainName(false),
 	idna.BidiRule(),
 	idna.VerifyDNSLength(true),
 )
@@ -66,6 +67,7 @@ func validateDomainName(name string, allowEmpty bool) error {
 			return errors.New("must use IDNA A-label form")
 		}
 	}
+	name = strings.TrimSuffix(name, ".")
 	ascii, err := dnsNameProfile.ToASCII(name)
 	if err != nil {
 		return fmt.Errorf("must be a valid IDNA A-label: %w", err)
