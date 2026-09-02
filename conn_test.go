@@ -14,6 +14,7 @@ import (
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 	"github.com/quic-go/quic-go/quicvarint"
+	"golang.org/x/net/dns/dnsmessage"
 
 	"github.com/stretchr/testify/require"
 )
@@ -101,7 +102,10 @@ func TestDNSConfiguration(t *testing.T) {
 				IPv4Addresses:            []netip.Addr{netip.MustParseAddr("192.0.2.53")},
 				IPv6Addresses:            []netip.Addr{netip.MustParseAddr("2001:db8::53")},
 				AuthenticationDomainName: "resolver.example",
-				ServiceParameters:        []byte{0, 3, 0, 2, 0x21, 0x35},
+				ServiceParameters: []dnsmessage.SVCParam{{
+					Key:   dnsmessage.SVCParamPort,
+					Value: []byte{0x21, 0x35},
+				}},
 			}},
 			InternalDomains: []string{"internal.example"},
 			SearchDomains:   []string{"internal.example", "example"},

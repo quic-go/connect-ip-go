@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/netip"
 
+	"golang.org/x/net/dns/dnsmessage"
+
 	"github.com/quic-go/quic-go/http3"
 	"github.com/quic-go/quic-go/quicvarint"
 )
@@ -373,11 +375,28 @@ func parseDNSNameserver(r http3.CapsuleReader) (DNSNameserver, error) {
 	if paramsLen > uint64(r.Remaining()) {
 		return DNSNameserver{}, io.ErrUnexpectedEOF
 	}
-	var serviceParameters []byte
+	var serviceParameters []dnsmessage.SVCParam
 	if paramsLen > 0 {
-		serviceParameters = make([]byte, int(paramsLen))
-		if _, err := io.ReadFull(r, serviceParameters); err != nil {
+		b := make([]byte, int(paramsLen))
+		if _, err := io.ReadFull(r, b); err != nil {
 			return DNSNameserver{}, err
+		}
+		for len(b) > 0 {
+			if len(b) < 4 {
+				return DNSNameserver{}, fmt.Errorf("invalid service parameter header: %w", io.ErrUnexpectedEOF)
+			}
+			key := binary.BigEndian.Uint16(b)
+			valueLen := int(binary.BigEndian.Uint16(b[2:]))
+			b = b[4:]
+			if valueLen > len(b) {
+				return DNSNameserver{}, fmt.Errorf("invalid service parameter value: %w", io.ErrUnexpectedEOF)
+			}
+			serviceParameters = append(serviceParameters, dnsmessage.SVCParam{
+				Key: dnsmessage.SVCParamKey(key),
+				// the second index sets capacity so append on Value can't overwrite later parameters
+				Value: b[:valueLen:valueLen],
+			})
+			b = b[valueLen:]
 		}
 	}
 	return DNSNameserver{
@@ -411,19 +430,27 @@ func (c *dnsAssignCapsule) append(b []byte) []byte {
 	payload := make([]byte, 0, 256)
 	for _, cfg := range c.DNSConfigurations {
 		payload = quicvarint.Append(payload, uint64(len(cfg.Nameservers)))
-		for _, nameserver := range cfg.Nameservers {
-			payload = binary.BigEndian.AppendUint16(payload, nameserver.ServicePriority)
-			payload = quicvarint.Append(payload, uint64(len(nameserver.IPv4Addresses)))
-			for _, addr := range nameserver.IPv4Addresses {
+		for _, ns := range cfg.Nameservers {
+			payload = binary.BigEndian.AppendUint16(payload, ns.ServicePriority)
+			payload = quicvarint.Append(payload, uint64(len(ns.IPv4Addresses)))
+			for _, addr := range ns.IPv4Addresses {
 				payload = append(payload, addr.AsSlice()...)
 			}
-			payload = quicvarint.Append(payload, uint64(len(nameserver.IPv6Addresses)))
-			for _, addr := range nameserver.IPv6Addresses {
+			payload = quicvarint.Append(payload, uint64(len(ns.IPv6Addresses)))
+			for _, addr := range ns.IPv6Addresses {
 				payload = append(payload, addr.AsSlice()...)
 			}
-			payload = appendDomain(payload, nameserver.AuthenticationDomainName)
-			payload = quicvarint.Append(payload, uint64(len(nameserver.ServiceParameters)))
-			payload = append(payload, nameserver.ServiceParameters...)
+			payload = appendDomain(payload, ns.AuthenticationDomainName)
+			var l int
+			for _, p := range ns.ServiceParameters {
+				l += 4 + len(p.Value)
+			}
+			payload = quicvarint.Append(payload, uint64(l))
+			for _, p := range ns.ServiceParameters {
+				payload = binary.BigEndian.AppendUint16(payload, uint16(p.Key))
+				payload = binary.BigEndian.AppendUint16(payload, uint16(len(p.Value)))
+				payload = append(payload, p.Value...)
+			}
 		}
 		payload = quicvarint.Append(payload, uint64(len(cfg.InternalDomains)))
 		for _, domain := range cfg.InternalDomains {

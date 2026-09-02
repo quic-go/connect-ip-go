@@ -7,6 +7,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"golang.org/x/net/dns/dnsmessage"
 	"golang.org/x/net/idna"
 )
 
@@ -19,8 +20,7 @@ const (
 )
 
 // DNSNameserver describes the Nameserver structure defined by
-// draft-ietf-masque-connect-ip-dns-06. ServiceParameters contains SvcParams
-// in the wire format defined by RFC 9460.
+// draft-ietf-masque-connect-ip-dns-06.
 type DNSNameserver struct {
 	ServicePriority uint16
 	IPv4Addresses   []netip.Addr
@@ -32,7 +32,7 @@ type DNSNameserver struct {
 	// U-labels are rejected. It may be empty only when the nameserver supports
 	// unencrypted DNS exclusively.
 	AuthenticationDomainName string
-	ServiceParameters        []byte
+	ServiceParameters        []dnsmessage.SVCParam
 }
 
 // DNSConfiguration describes the DNS Configuration structure defined by
@@ -79,25 +79,47 @@ func validateDomainName(name string, allowEmpty bool) error {
 }
 
 func (c DNSConfiguration) validate() error {
-	for _, nameserver := range c.Nameservers {
-		if nameserver.ServicePriority == 0 {
+	for _, ns := range c.Nameservers {
+		if ns.ServicePriority == 0 {
 			return errors.New("service priority must not be zero")
 		}
-		if len(nameserver.ServiceParameters) > maxServiceParametersLen {
+		var serviceParametersLen int
+		var hasALPN, hasNoDefaultALPN bool
+		for i, p := range ns.ServiceParameters {
+			if i > 0 && p.Key <= ns.ServiceParameters[i-1].Key {
+				return errors.New("service parameter keys must be in strictly increasing order")
+			}
+			if len(p.Value) > maxServiceParametersLen {
+				return errors.New("service parameter value too long")
+			}
+			serviceParametersLen += 4 + len(p.Value)
+			switch p.Key {
+			case dnsmessage.SVCParamALPN:
+				hasALPN = true
+			case dnsmessage.SVCParamNoDefaultALPN:
+				hasNoDefaultALPN = true
+			case dnsmessage.SVCParamIPv4Hint, dnsmessage.SVCParamIPv6Hint:
+				return fmt.Errorf("service parameter %s is not allowed", p.Key)
+			}
+		}
+		if serviceParametersLen > maxServiceParametersLen {
 			return errors.New("service parameters too long")
 		}
-		if err := validateDomainName(nameserver.AuthenticationDomainName, true); err != nil {
+		if err := validateDomainName(ns.AuthenticationDomainName, true); err != nil {
 			return fmt.Errorf("invalid authentication domain name: %w", err)
 		}
-		if nameserver.AuthenticationDomainName == "" && len(nameserver.IPv4Addresses)+len(nameserver.IPv6Addresses) == 0 {
-			return errors.New("nameserver must have an address when authentication domain name is empty")
+		if ns.AuthenticationDomainName == "" && (hasALPN || hasNoDefaultALPN) {
+			return errors.New("ALPN service parameters require an authentication domain name")
 		}
-		for _, addr := range nameserver.IPv4Addresses {
+		if !hasNoDefaultALPN && len(ns.IPv4Addresses)+len(ns.IPv6Addresses) == 0 {
+			return errors.New("nameserver must have an address when no-default-alpn is omitted")
+		}
+		for _, addr := range ns.IPv4Addresses {
 			if !addr.Is4() {
 				return fmt.Errorf("non-IPv4 address in IPv4 address list: %s", addr)
 			}
 		}
-		for _, addr := range nameserver.IPv6Addresses {
+		for _, addr := range ns.IPv6Addresses {
 			if !addr.Is6() || addr.Is4In6() {
 				return fmt.Errorf("non-IPv6 address in IPv6 address list: %s", addr)
 			}

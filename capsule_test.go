@@ -9,6 +9,7 @@ import (
 
 	"github.com/quic-go/quic-go/http3"
 	"github.com/quic-go/quic-go/quicvarint"
+	"golang.org/x/net/dns/dnsmessage"
 
 	"github.com/stretchr/testify/require"
 )
@@ -308,9 +309,9 @@ func TestParseDNSAssignCapsule(t *testing.T) {
 	payload = quicvarint.Append(payload, 1) // IPv6 Address Count
 	payload = append(payload, netip.MustParseAddr("2001:db8::1").AsSlice()...)
 	payload = appendDomain(payload, "resolver.example")
-	serviceParameters := []byte{0, 3, 0, 2, 0x21, 0x35} // port=853
-	payload = quicvarint.Append(payload, uint64(len(serviceParameters)))
-	payload = append(payload, serviceParameters...)
+	serviceParametersBytes := []byte{0, 3, 0, 2, 0x21, 0x35} // port=853
+	payload = quicvarint.Append(payload, uint64(len(serviceParametersBytes)))
+	payload = append(payload, serviceParametersBytes...)
 	payload = quicvarint.Append(payload, 1) // Internal Domain Count
 	payload = appendDomain(payload, "internal.example")
 	payload = quicvarint.Append(payload, 2) // Search Domain Count
@@ -340,7 +341,10 @@ func TestParseDNSAssignCapsule(t *testing.T) {
 					IPv4Addresses:            []netip.Addr{netip.MustParseAddr("192.0.2.33")},
 					IPv6Addresses:            []netip.Addr{netip.MustParseAddr("2001:db8::1")},
 					AuthenticationDomainName: "resolver.example",
-					ServiceParameters:        serviceParameters,
+					ServiceParameters: []dnsmessage.SVCParam{{
+						Key:   dnsmessage.SVCParamPort,
+						Value: []byte{0x21, 0x35},
+					}},
 				}},
 				InternalDomains: []string{"internal.example"},
 				SearchDomains:   []string{"internal.example", "example"},
@@ -363,7 +367,10 @@ func TestWriteDNSAssignCapsule(t *testing.T) {
 			Nameservers: []DNSNameserver{{
 				ServicePriority:          1,
 				AuthenticationDomainName: "masque.example.org",
-				ServiceParameters:        []byte{0, 1, 0, 3, 2, 'h', '3'},
+				ServiceParameters: []dnsmessage.SVCParam{
+					{Key: dnsmessage.SVCParamALPN, Value: []byte{2, 'h', '3'}},
+					{Key: dnsmessage.SVCParamNoDefaultALPN, Value: []byte{}},
+				},
 			}},
 			InternalDomains: []string{""},
 		},
@@ -465,6 +472,36 @@ func TestParseDNSAssignCapsuleInvalid(t *testing.T) {
 		require.Equal(t, int64(len("short")), r.Remaining())
 	})
 
+	t.Run("truncated service parameter value", func(t *testing.T) {
+		payload := quicvarint.Append(nil, 1) // Nameserver Count
+		payload = binary.BigEndian.AppendUint16(payload, 1)
+		payload = quicvarint.Append(payload, 0) // IPv4 Address Count
+		payload = quicvarint.Append(payload, 0) // IPv6 Address Count
+		payload = appendDomain(payload, "resolver.example")
+		payload = quicvarint.Append(payload, 5)
+		payload = append(payload, 0, 3, 0, 2, 0x21)
+		payload = quicvarint.Append(payload, 0)
+		payload = quicvarint.Append(payload, 0)
+
+		_, err := parseDNSAssignCapsule(newCapsuleReader(t, capsuleTypeDNSAssign, payload))
+		require.ErrorIs(t, err, io.ErrUnexpectedEOF)
+	})
+
+	t.Run("unordered service parameters", func(t *testing.T) {
+		payload := quicvarint.Append(nil, 1) // Nameserver Count
+		payload = binary.BigEndian.AppendUint16(payload, 1)
+		payload = quicvarint.Append(payload, 0) // IPv4 Address Count
+		payload = quicvarint.Append(payload, 0) // IPv6 Address Count
+		payload = appendDomain(payload, "resolver.example")
+		payload = quicvarint.Append(payload, 8)
+		payload = append(payload, 0, 3, 0, 0, 0, 1, 0, 0)
+		payload = quicvarint.Append(payload, 0)
+		payload = quicvarint.Append(payload, 0)
+
+		_, err := parseDNSAssignCapsule(newCapsuleReader(t, capsuleTypeDNSAssign, payload))
+		require.ErrorContains(t, err, "strictly increasing order")
+	})
+
 	t.Run("incomplete capsule", func(t *testing.T) {
 		data := (&dnsAssignCapsule{DNSConfigurations: []DNSConfiguration{
 			{
@@ -473,7 +510,10 @@ func TestParseDNSAssignCapsuleInvalid(t *testing.T) {
 					IPv4Addresses:            []netip.Addr{netip.MustParseAddr("192.0.2.53")},
 					IPv6Addresses:            []netip.Addr{netip.MustParseAddr("2001:db8::53")},
 					AuthenticationDomainName: "resolver.example",
-					ServiceParameters:        []byte{0, 3, 0, 2, 0x21, 0x35},
+					ServiceParameters: []dnsmessage.SVCParam{{
+						Key:   dnsmessage.SVCParamPort,
+						Value: []byte{0x21, 0x35},
+					}},
 				}},
 				InternalDomains: []string{"internal.example"},
 				SearchDomains:   []string{"internal.example", "example"},
