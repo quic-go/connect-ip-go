@@ -561,6 +561,12 @@ func TestParsePREF64CapsuleInvalid(t *testing.T) {
 		require.ErrorContains(t, err, "lower bits not covered")
 	})
 
+	t.Run("IPv4-mapped IPv6 prefix", func(t *testing.T) {
+		data := []byte{96, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff}
+		_, err := parsePREF64Capsule(newCapsuleReader(t, capsuleTypePREF64, data))
+		require.ErrorContains(t, err, "IPv4-mapped IPv6 addresses are not valid NAT64 prefixes")
+	})
+
 	t.Run("length not a multiple of 13", func(t *testing.T) {
 		_, err := parsePREF64Capsule(newCapsuleReader(t, capsuleTypePREF64, make([]byte, 12)))
 		require.ErrorContains(t, err, "length is not a multiple of 13")

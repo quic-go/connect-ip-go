@@ -477,6 +477,9 @@ func parsePREF64Capsule(r http3.CapsuleReader) (*pref64Capsule, error) {
 			return nil, err
 		}
 		prefix := netip.PrefixFrom(netip.AddrFrom16(addrBytes), int(prefixLen))
+		if prefix.Addr().Is4In6() {
+			return nil, errors.New("IPv4-mapped IPv6 addresses are not valid NAT64 prefixes")
+		}
 		if prefix != prefix.Masked() {
 			return nil, errors.New("lower bits not covered by NAT64 prefix length are not all zero")
 		}
