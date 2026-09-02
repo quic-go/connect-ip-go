@@ -59,8 +59,10 @@ type Conn struct {
 	closeConn   func() error
 	writeNotify chan struct{}
 
-	assignedAddressUpdates chan []netip.Prefix
-	availableRouteUpdates  chan []IPRoute
+	assignedAddressUpdates  chan []netip.Prefix
+	availableRouteUpdates   chan []IPRoute
+	dnsConfigurationUpdates chan []DNSConfiguration
+	pref64Updates           chan []netip.Prefix
 
 	mu sync.Mutex
 	// queuedCapsules contains the capsules serialized by the send methods. This
@@ -76,12 +78,14 @@ type Conn struct {
 
 func newProxiedConn(str http3Stream, closeConn func() error) *Conn {
 	c := &Conn{
-		str:                    str,
-		closeConn:              closeConn,
-		writeNotify:            make(chan struct{}, 1),
-		assignedAddressUpdates: make(chan []netip.Prefix, 1),
-		availableRouteUpdates:  make(chan []IPRoute, 1),
-		closeChan:              make(chan struct{}),
+		str:                     str,
+		closeConn:               closeConn,
+		writeNotify:             make(chan struct{}, 1),
+		assignedAddressUpdates:  make(chan []netip.Prefix, 1),
+		availableRouteUpdates:   make(chan []IPRoute, 1),
+		dnsConfigurationUpdates: make(chan []DNSConfiguration, 1),
+		pref64Updates:           make(chan []netip.Prefix, 1),
+		closeChan:               make(chan struct{}),
 	}
 	go func() {
 		if err := c.readFromStream(); err != nil {
@@ -154,6 +158,83 @@ func (c *Conn) AssignAddresses(prefixes []netip.Prefix) error {
 	if err == nil {
 		c.peerAddresses = slices.Clone(prefixes)
 	}
+	c.mu.Unlock()
+	if err != nil {
+		_ = c.Close()
+		return err
+	}
+	return nil
+}
+
+// SendDNSConfiguration schedules a DNS configuration update to the peer.
+// It returns once the update has been queued. The update supersedes the DNS
+// configuration previously sent on this connection.
+//
+// To avoid leaking DNS traffic outside the tunnel, the application is responsible
+// for advertising the corresponding routes before calling this method. See
+// [Section 5 of draft-ietf-masque-connect-ip-dns-06].
+//
+// [Section 5 of draft-ietf-masque-connect-ip-dns-06]: https://datatracker.ietf.org/doc/html/draft-ietf-masque-connect-ip-dns-06#section-5
+func (c *Conn) SendDNSConfiguration(configurations []DNSConfiguration) error {
+	for _, config := range configurations {
+		if err := config.validate(); err != nil {
+			return fmt.Errorf("invalid DNS configuration: %w", err)
+		}
+	}
+	return c.sendCapsule((&dnsAssignCapsule{DNSConfigurations: configurations}).append(nil))
+}
+
+// ReceiveDNSConfiguration waits for the next DNS configuration update from the peer.
+// Each update supersedes the preceding one.
+func (c *Conn) ReceiveDNSConfiguration(ctx context.Context) ([]DNSConfiguration, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-c.closeChan:
+		return nil, c.closeErr
+	case configurations := <-c.dnsConfigurationUpdates:
+		return configurations, nil
+	}
+}
+
+// SendPREF64Configuration schedules an update of the NAT64 prefixes to use for
+// IPv6/IPv4 address synthesis. It returns once the update has been queued. An
+// empty slice clears the previously sent configuration.
+func (c *Conn) SendPREF64Configuration(prefixes []netip.Prefix) error {
+	for i, prefix := range prefixes {
+		if !prefix.IsValid() || !prefix.Addr().Is6() || prefix.Addr().Is4In6() {
+			return fmt.Errorf("invalid NAT64 prefix %d: not an IPv6 prefix", i)
+		}
+		switch prefix.Bits() {
+		case 32, 40, 48, 56, 64, 96:
+		default:
+			return fmt.Errorf("invalid NAT64 prefix %d: invalid prefix length %d", i, prefix.Bits())
+		}
+	}
+	return c.sendCapsule((&pref64Capsule{Prefixes: prefixes}).append(nil))
+}
+
+// ReceivePREF64Configuration waits for the next NAT64 prefix update from the
+// peer. An empty slice means that NAT64 prefixes are not available.
+func (c *Conn) ReceivePREF64Configuration(ctx context.Context) ([]netip.Prefix, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-c.closeChan:
+		return nil, c.closeErr
+	case prefixes := <-c.pref64Updates:
+		return prefixes, nil
+	}
+}
+
+func (c *Conn) sendCapsule(capsuleData []byte) error {
+	c.mu.Lock()
+	if c.closeErr != nil {
+		err := c.closeErr
+		c.mu.Unlock()
+		return err
+	}
+	err := c.queueCapsule(capsuleData)
 	c.mu.Unlock()
 	if err != nil {
 		_ = c.Close()
@@ -250,6 +331,18 @@ func (c *Conn) readFromStream() error {
 				return err
 			}
 			queueLatest(c.availableRouteUpdates, capsule.IPAddressRanges)
+		case capsuleTypeDNSAssign:
+			capsule, err := parseDNSAssignCapsule(cr)
+			if err != nil {
+				return err
+			}
+			queueLatest(c.dnsConfigurationUpdates, capsule.DNSConfigurations)
+		case capsuleTypePREF64:
+			capsule, err := parsePREF64Capsule(cr)
+			if err != nil {
+				return err
+			}
+			queueLatest(c.pref64Updates, capsule.Prefixes)
 		default:
 			if err := cr.Discard(); err != nil {
 				return err
