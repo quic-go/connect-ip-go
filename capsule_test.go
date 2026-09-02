@@ -25,6 +25,28 @@ func newCapsuleReader(t *testing.T, typ http3.CapsuleType, payload []byte) http3
 	return cr
 }
 
+func testIncompleteCapsule(t *testing.T, data []byte, parse func(http3.CapsuleReader) error) {
+	t.Helper()
+
+	r := bytes.NewReader(data)
+	_, cr, err := http3.NewCapsuleParser(r).Next()
+	require.NoError(t, err)
+	require.NoError(t, parse(cr))
+	require.Zero(t, r.Len())
+	for i := range data {
+		_, cr, err := http3.NewCapsuleParser(bytes.NewReader(data[:i])).Next()
+		if err != nil {
+			if i == 0 {
+				require.ErrorIs(t, err, io.EOF)
+			} else {
+				require.ErrorIs(t, err, io.ErrUnexpectedEOF)
+			}
+			continue
+		}
+		require.ErrorIs(t, parse(cr), io.ErrUnexpectedEOF)
+	}
+}
+
 func TestParseAddressAssignCapsule(t *testing.T) {
 	addr1 := quicvarint.Append(nil, 1337) // Request ID
 	addr1 = append(addr1, 4)              // IPv4
@@ -107,35 +129,27 @@ func testParseAddressCapsuleInvalid(t *testing.T, typ http3.CapsuleType, f func(
 	})
 
 	t.Run("incomplete capsule", func(t *testing.T) {
-		addr1 := quicvarint.Append(nil, 1337) // Request ID
-		addr1 = append(addr1, 4)              // IPv4
-		addr1 = append(addr1, netip.AddrFrom4([4]byte{1, 2, 3, 4}).AsSlice()...)
-		addr1 = append(addr1, 32)             // IP Prefix Length
-		addr2 := quicvarint.Append(nil, 1338) // Request ID
-		addr2 = append(addr2, 6)              // IPv6
-		addr2 = append(addr2, netip.MustParseAddr("2001:db8::1").AsSlice()...)
-		addr2 = append(addr2, 128) // IP Prefix Length
-		data := quicvarint.Append(nil, uint64(typ))
-		data = quicvarint.Append(data, uint64(len(addr1)+len(addr2))) // Length
-		data = append(data, addr1...)
-		data = append(data, addr2...)
-
-		_, cr, err := http3.NewCapsuleParser(bytes.NewReader(data)).Next()
-		require.NoError(t, err)
-		require.NoError(t, f(cr))
-		for i := range data {
-			_, cr, err := http3.NewCapsuleParser(bytes.NewReader(data[:i])).Next()
-			if err != nil {
-				if i == 0 {
-					require.ErrorIs(t, err, io.EOF)
-				} else {
-					require.ErrorIs(t, err, io.ErrUnexpectedEOF)
-				}
-				continue
-			}
-			_, err = parseAddressAssignCapsule(cr)
-			require.ErrorIs(t, err, io.ErrUnexpectedEOF)
+		var data []byte
+		switch typ {
+		case capsuleTypeAddressAssign:
+			data = (&addressAssignCapsule{
+				AssignedAddresses: []AssignedAddress{
+					{RequestID: 1337, IPPrefix: netip.MustParsePrefix("1.2.3.4/32")},
+					{RequestID: 1338, IPPrefix: netip.MustParsePrefix("2001:db8::1/128")},
+				},
+			}).append(nil)
+		case capsuleTypeAddressRequest:
+			data = (&addressRequestCapsule{
+				RequestedAddresses: []RequestedAddress{
+					{RequestID: 1337, IPPrefix: netip.MustParsePrefix("1.2.3.4/32")},
+					{RequestID: 1338, IPPrefix: netip.MustParsePrefix("2001:db8::1/128")},
+				},
+			}).append(nil)
+		default:
+			t.Fatalf("unexpected capsule type: %d", typ)
 		}
+
+		testIncompleteCapsule(t, data, func(r http3.CapsuleReader) error { return f(r) })
 	})
 }
 
@@ -271,40 +285,17 @@ func TestParseRouteAdvertisementCapsuleInvalid(t *testing.T) {
 	})
 
 	t.Run("incomplete capsule", func(t *testing.T) {
-		iprange1 := []byte{4}                                                          // IPv4
-		iprange1 = append(iprange1, netip.AddrFrom4([4]byte{1, 1, 1, 1}).AsSlice()...) // Start IP
-		iprange1 = append(iprange1, netip.AddrFrom4([4]byte{2, 2, 2, 2}).AsSlice()...) // End IP
-		iprange1 = append(iprange1, 13)                                                // IP Protocol
+		data := (&routeAdvertisementCapsule{
+			IPAddressRanges: []IPRoute{
+				{StartIP: netip.MustParseAddr("1.1.1.1"), EndIP: netip.MustParseAddr("2.2.2.2"), IPProtocol: 13},
+				{StartIP: netip.MustParseAddr("2001:db8::1"), EndIP: netip.MustParseAddr("2001:db8::100"), IPProtocol: 37},
+			},
+		}).append(nil)
 
-		iprange2 := []byte{6}                                                          // IPv6
-		iprange2 = append(iprange2, netip.MustParseAddr("2001:db8::1").AsSlice()...)   // Start IP
-		iprange2 = append(iprange2, netip.MustParseAddr("2001:db8::100").AsSlice()...) // End IP
-		iprange2 = append(iprange2, 37)                                                // IP Protocol
-
-		data := quicvarint.Append(nil, uint64(capsuleTypeRouteAdvertisement))
-		data = quicvarint.Append(data, uint64(len(iprange1)+len(iprange2))) // Length
-		data = append(data, iprange1...)
-		data = append(data, iprange2...)
-
-		r := bytes.NewReader(data)
-		_, cr, err := http3.NewCapsuleParser(r).Next()
-		require.NoError(t, err)
-		_, err = parseRouteAdvertisementCapsule(cr)
-		require.NoError(t, err)
-		require.Zero(t, r.Len())
-		for i := range data {
-			_, cr, err := http3.NewCapsuleParser(bytes.NewReader(data[:i])).Next()
-			if err != nil {
-				if i == 0 {
-					require.ErrorIs(t, err, io.EOF)
-				} else {
-					require.ErrorIs(t, err, io.ErrUnexpectedEOF)
-				}
-				continue
-			}
-			_, err = parseRouteAdvertisementCapsule(cr)
-			require.ErrorIs(t, err, io.ErrUnexpectedEOF)
-		}
+		testIncompleteCapsule(t, data, func(r http3.CapsuleReader) error {
+			_, err := parseRouteAdvertisementCapsule(r)
+			return err
+		})
 	})
 }
 
@@ -473,6 +464,31 @@ func TestParseDNSAssignCapsuleInvalid(t *testing.T) {
 		require.ErrorIs(t, err, io.ErrUnexpectedEOF)
 		require.Equal(t, int64(len("short")), r.Remaining())
 	})
+
+	t.Run("incomplete capsule", func(t *testing.T) {
+		data := (&dnsAssignCapsule{DNSConfigurations: []DNSConfiguration{
+			{
+				Nameservers: []DNSNameserver{{
+					ServicePriority:          1,
+					IPv4Addresses:            []netip.Addr{netip.MustParseAddr("192.0.2.53")},
+					IPv6Addresses:            []netip.Addr{netip.MustParseAddr("2001:db8::53")},
+					AuthenticationDomainName: "resolver.example",
+					ServiceParameters:        []byte{0, 3, 0, 2, 0x21, 0x35},
+				}},
+				InternalDomains: []string{"internal.example"},
+				SearchDomains:   []string{"internal.example", "example"},
+			},
+			{
+				Nameservers:     []DNSNameserver{{ServicePriority: 2}},
+				InternalDomains: []string{"other.example"},
+			},
+		}}).append(nil)
+
+		testIncompleteCapsule(t, data, func(r http3.CapsuleReader) error {
+			_, err := parseDNSAssignCapsule(r)
+			return err
+		})
+	})
 }
 
 func TestParsePREF64Capsule(t *testing.T) {
@@ -545,5 +561,17 @@ func TestParsePREF64CapsuleInvalid(t *testing.T) {
 	t.Run("length not a multiple of 13", func(t *testing.T) {
 		_, err := parsePREF64Capsule(newCapsuleReader(t, capsuleTypePREF64, make([]byte, 12)))
 		require.ErrorContains(t, err, "length is not a multiple of 13")
+	})
+
+	t.Run("incomplete capsule", func(t *testing.T) {
+		data := (&pref64Capsule{Prefixes: []netip.Prefix{
+			netip.MustParsePrefix("64:ff9b::/96"),
+			netip.MustParsePrefix("2001:db8::/32"),
+		}}).append(nil)
+
+		testIncompleteCapsule(t, data, func(r http3.CapsuleReader) error {
+			_, err := parsePREF64Capsule(r)
+			return err
+		})
 	})
 }
