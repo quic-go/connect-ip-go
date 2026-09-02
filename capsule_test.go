@@ -521,7 +521,7 @@ func TestParsePREF64CapsuleLimit(t *testing.T) {
 		_, err := parsePREF64Capsule(newCapsuleReader(
 			t, capsuleTypePREF64, bytes.Repeat(prefix, maxPREF64Prefixes+1),
 		))
-		require.ErrorContains(t, err, "PREF64 capsule contains too many prefixes: 65 (maximum 64)")
+		require.ErrorContains(t, err, "PREF64 capsule contains too many prefixes: 257 (maximum 256)")
 	})
 }
 

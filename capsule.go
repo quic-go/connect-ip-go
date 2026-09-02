@@ -450,7 +450,7 @@ type pref64Capsule struct {
 	Prefixes []netip.Prefix
 }
 
-const maxPREF64Prefixes = 64
+const maxPREF64Prefixes = 256
 
 func parsePREF64Capsule(r http3.CapsuleReader) (*pref64Capsule, error) {
 	// each prefix consists of a 1-byte prefix length and 12 bytes of address
