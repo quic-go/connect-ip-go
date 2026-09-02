@@ -479,7 +479,10 @@ func TestParseDNSAssignCapsuleInvalid(t *testing.T) {
 				SearchDomains:   []string{"internal.example", "example"},
 			},
 			{
-				Nameservers:     []DNSNameserver{{ServicePriority: 2}},
+				Nameservers: []DNSNameserver{{
+					ServicePriority: 2,
+					IPv4Addresses:   []netip.Addr{netip.MustParseAddr("198.51.100.53")},
+				}},
 				InternalDomains: []string{"other.example"},
 			},
 		}}).append(nil)

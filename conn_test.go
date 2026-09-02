@@ -173,7 +173,6 @@ func TestDNSConfiguration(t *testing.T) {
 		require.ErrorContains(t,
 			conn.SendDNSConfiguration([]DNSConfiguration{
 				{
-					Nameservers:     []DNSNameserver{{ServicePriority: 1}},
 					InternalDomains: []string{"bücher.example"},
 				},
 			}),

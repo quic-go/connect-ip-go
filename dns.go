@@ -87,6 +87,9 @@ func (c DNSConfiguration) validate() error {
 		if err := validateDomainName(nameserver.AuthenticationDomainName, true); err != nil {
 			return fmt.Errorf("invalid authentication domain name: %w", err)
 		}
+		if nameserver.AuthenticationDomainName == "" && len(nameserver.IPv4Addresses)+len(nameserver.IPv6Addresses) == 0 {
+			return errors.New("nameserver must have an address when authentication domain name is empty")
+		}
 		for _, addr := range nameserver.IPv4Addresses {
 			if !addr.Is4() {
 				return fmt.Errorf("non-IPv4 address in IPv4 address list: %s", addr)

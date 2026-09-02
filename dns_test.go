@@ -28,7 +28,10 @@ func TestDNSConfigurationDomainValidation(t *testing.T) {
 		{
 			name: "empty authentication and internal domains",
 			configuration: DNSConfiguration{
-				Nameservers:     []DNSNameserver{{ServicePriority: 1}},
+				Nameservers: []DNSNameserver{{
+					ServicePriority: 1,
+					IPv4Addresses:   []netip.Addr{netip.MustParseAddr("192.0.2.53")},
+				}},
 				InternalDomains: []string{""},
 			},
 		},
@@ -43,7 +46,6 @@ func TestDNSConfigurationDomainValidation(t *testing.T) {
 		{
 			name: "internal U-label",
 			configuration: DNSConfiguration{
-				Nameservers:     []DNSNameserver{{ServicePriority: 1}},
 				InternalDomains: []string{"bücher.example"},
 			},
 			err: "invalid internal domain name: must use IDNA A-label form",
@@ -51,7 +53,6 @@ func TestDNSConfigurationDomainValidation(t *testing.T) {
 		{
 			name: "search U-label",
 			configuration: DNSConfiguration{
-				Nameservers:   []DNSNameserver{{ServicePriority: 1}},
 				SearchDomains: []string{"bücher.example"},
 			},
 			err: "invalid search domain name: must use IDNA A-label form",
@@ -59,7 +60,6 @@ func TestDNSConfigurationDomainValidation(t *testing.T) {
 		{
 			name: "empty search domain",
 			configuration: DNSConfiguration{
-				Nameservers:   []DNSNameserver{{ServicePriority: 1}},
 				SearchDomains: []string{""},
 			},
 			err: "invalid search domain name: must not be empty",
@@ -67,7 +67,6 @@ func TestDNSConfigurationDomainValidation(t *testing.T) {
 		{
 			name: "invalid A-label",
 			configuration: DNSConfiguration{
-				Nameservers:   []DNSNameserver{{ServicePriority: 1}},
 				SearchDomains: []string{"xn--.example"},
 			},
 			err: "invalid search domain name: must be a valid IDNA A-label",
@@ -75,7 +74,6 @@ func TestDNSConfigurationDomainValidation(t *testing.T) {
 		{
 			name: "label too long",
 			configuration: DNSConfiguration{
-				Nameservers:   []DNSNameserver{{ServicePriority: 1}},
 				SearchDomains: []string{strings.Repeat("a", 64) + ".example"},
 			},
 			err: "invalid search domain name: must be a valid IDNA A-label",
@@ -92,6 +90,29 @@ func TestDNSConfigurationDomainValidation(t *testing.T) {
 			require.ErrorContains(t, err, test.err)
 		})
 	}
+}
+
+func TestDNSConfigurationNameserverAddressValidation(t *testing.T) {
+	t.Run("no address", func(t *testing.T) {
+		configuration := DNSConfiguration{Nameservers: []DNSNameserver{{ServicePriority: 1}}}
+		require.ErrorContains(t, configuration.validate(), "nameserver must have an address")
+	})
+
+	t.Run("IPv4 address", func(t *testing.T) {
+		configuration := DNSConfiguration{Nameservers: []DNSNameserver{{
+			ServicePriority: 1,
+			IPv4Addresses:   []netip.Addr{netip.MustParseAddr("192.0.2.53")},
+		}}}
+		require.NoError(t, configuration.validate())
+	})
+
+	t.Run("IPv6 address", func(t *testing.T) {
+		configuration := DNSConfiguration{Nameservers: []DNSNameserver{{
+			ServicePriority: 1,
+			IPv6Addresses:   []netip.Addr{netip.MustParseAddr("2001:db8::53")},
+		}}}
+		require.NoError(t, configuration.validate())
+	})
 }
 
 func TestDNSConfigurationIPv6ZoneValidation(t *testing.T) {
