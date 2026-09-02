@@ -24,7 +24,9 @@ const (
 type DNSNameserver struct {
 	ServicePriority uint16
 	IPv4Addresses   []netip.Addr
-	IPv6Addresses   []netip.Addr
+	// IPv6Addresses must not contain scoped addressing zones.
+	// Zone identifiers are local to an endpoint and are not part of the wire format.
+	IPv6Addresses []netip.Addr
 	// AuthenticationDomainName is the fully qualified domain name of the
 	// nameserver. It must be in DNS presentation format using IDNA A-labels;
 	// U-labels are rejected. It may be empty only when the nameserver supports
@@ -93,6 +95,9 @@ func (c DNSConfiguration) validate() error {
 		for _, addr := range nameserver.IPv6Addresses {
 			if !addr.Is6() || addr.Is4In6() {
 				return fmt.Errorf("non-IPv6 address in IPv6 address list: %s", addr)
+			}
+			if addr.Zone() != "" {
+				return fmt.Errorf("IPv6 address with zone in IPv6 address list: %s", addr)
 			}
 		}
 	}

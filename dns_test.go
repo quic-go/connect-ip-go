@@ -1,6 +1,7 @@
 package connectip
 
 import (
+	"net/netip"
 	"strings"
 	"testing"
 
@@ -91,4 +92,22 @@ func TestDNSConfigurationDomainValidation(t *testing.T) {
 			require.ErrorContains(t, err, test.err)
 		})
 	}
+}
+
+func TestDNSConfigurationIPv6ZoneValidation(t *testing.T) {
+	t.Run("link-local address without zone", func(t *testing.T) {
+		configuration := DNSConfiguration{Nameservers: []DNSNameserver{{
+			ServicePriority: 1,
+			IPv6Addresses:   []netip.Addr{netip.MustParseAddr("fe80::1")},
+		}}}
+		require.NoError(t, configuration.validate())
+	})
+
+	t.Run("link-local address with zone", func(t *testing.T) {
+		configuration := DNSConfiguration{Nameservers: []DNSNameserver{{
+			ServicePriority: 1,
+			IPv6Addresses:   []netip.Addr{netip.MustParseAddr("fe80::1%eth0")},
+		}}}
+		require.ErrorContains(t, configuration.validate(), "IPv6 address with zone")
+	})
 }
