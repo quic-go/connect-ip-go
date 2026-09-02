@@ -388,13 +388,6 @@ func TestWriteDNSAssignCapsule(t *testing.T) {
 }
 
 func TestParseDNSAssignCapsuleInvalid(t *testing.T) {
-	t.Run("capsule size limit", func(t *testing.T) {
-		payload := make([]byte, maxDNSAssignCapsuleSize+1)
-
-		_, err := parseDNSAssignCapsule(newCapsuleReader(t, capsuleTypeDNSAssign, payload))
-		require.ErrorContains(t, err, "DNS_ASSIGN capsule too large")
-	})
-
 	t.Run("zero service priority", func(t *testing.T) {
 		payload := quicvarint.Append(nil, 1)
 		payload = append(payload, 0, 0)
@@ -426,6 +419,33 @@ func TestParseDNSAssignCapsuleInvalid(t *testing.T) {
 
 		_, err := parseDNSAssignCapsule(newCapsuleReader(t, capsuleTypeDNSAssign, payload))
 		require.ErrorContains(t, err, "domain name too long")
+	})
+
+	t.Run("domain memory limit", func(t *testing.T) {
+		payload := quicvarint.Append(nil, 2)
+		payload = appendDomain(payload, "")
+		payload = appendDomain(payload, "")
+
+		_, _, err := parseCounted(newCapsuleReader(t, capsuleTypeDNSAssign, payload), dnsValueOverhead, parseDomain)
+		require.ErrorIs(t, err, errDNSAssignMemoryLimit)
+	})
+
+	t.Run("domain name memory limit", func(t *testing.T) {
+		_, _, err := parseDomain(newCapsuleReader(t, capsuleTypeDNSAssign, appendDomain(nil, "example")), 0)
+		require.ErrorIs(t, err, errDNSAssignMemoryLimit)
+	})
+
+	t.Run("configuration memory limit", func(t *testing.T) {
+		var payload []byte
+		for range maxDNSAssignMemory/dnsValueOverhead + 1 {
+			payload = quicvarint.Append(payload, 0) // Nameserver Count
+			payload = quicvarint.Append(payload, 0) // Internal Domain Count
+			payload = quicvarint.Append(payload, 0) // Search Domain Count
+		}
+
+		_, err := parseDNSAssignCapsule(newCapsuleReader(t, capsuleTypeDNSAssign, payload))
+		require.ErrorIs(t, err, errDNSAssignMemoryLimit)
+		require.ErrorContains(t, err, "parsing DNS_ASSIGN configuration")
 	})
 
 	t.Run("domain must use A-label form", func(t *testing.T) {
@@ -491,6 +511,18 @@ func TestParseDNSAssignCapsuleInvalid(t *testing.T) {
 			_, err := parseDNSAssignCapsule(r)
 			return err
 		})
+	})
+
+	t.Run("service parameters memory limit", func(t *testing.T) {
+		payload := binary.BigEndian.AppendUint16(nil, 1)
+		payload = quicvarint.Append(payload, 0) // IPv4 Address Count
+		payload = quicvarint.Append(payload, 0) // IPv6 Address Count
+		payload = appendDomain(payload, "")
+		payload = quicvarint.Append(payload, 1)
+		payload = append(payload, 0)
+
+		_, _, err := parseDNSNameserver(newCapsuleReader(t, capsuleTypeDNSAssign, payload), 0)
+		require.ErrorIs(t, err, errDNSAssignMemoryLimit)
 	})
 }
 
