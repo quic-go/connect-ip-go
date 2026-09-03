@@ -72,26 +72,26 @@ func TestDNSConfigurationDomainValidation(t *testing.T) {
 			err: "invalid search domain name: must use IDNA A-label form",
 		},
 		{
-			name: "authentication domain must be fully qualified",
+			name: "authentication domain must be an FQDN",
 			configuration: DNSConfiguration{Nameservers: []DNSNameserver{{
 				ServicePriority:          1,
 				AuthenticationDomainName: "resolver.example",
 			}}},
-			err: "invalid authentication domain name: must be fully qualified",
+			err: "invalid authentication domain name: must be an FQDN",
 		},
 		{
-			name: "internal domain must be fully qualified",
+			name: "internal domain must be an FQDN",
 			configuration: DNSConfiguration{
 				InternalDomains: []string{"internal.example"},
 			},
-			err: "invalid internal domain name: must be fully qualified",
+			err: "invalid internal domain name: must be an FQDN",
 		},
 		{
-			name: "search domain must be fully qualified",
+			name: "search domain must be an FQDN",
 			configuration: DNSConfiguration{
 				SearchDomains: []string{"example"},
 			},
-			err: "invalid search domain name: must be fully qualified",
+			err: "invalid search domain name: must be an FQDN",
 		},
 		{
 			name: "empty search domain",

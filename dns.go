@@ -72,7 +72,7 @@ func validateDomainName(name string, allowEmpty bool) error {
 	}
 	name, ok := strings.CutSuffix(name, ".")
 	if !ok {
-		return errors.New("must be fully qualified (end with a dot)")
+		return errors.New("must be an FQDN")
 	}
 	ascii, err := dnsNameProfile.ToASCII(name)
 	if err != nil {
