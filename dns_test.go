@@ -155,26 +155,28 @@ func TestDNSConfigurationIPv6ZoneValidation(t *testing.T) {
 }
 
 func TestDNSConfigurationValidServiceParameters(t *testing.T) {
-	alpn := dnsmessage.SVCParam{Key: dnsmessage.SVCParamALPN, Value: []byte{2, 'h', '2', 2, 'h', '3'}}
-	noDefaultALPN := dnsmessage.SVCParam{Key: dnsmessage.SVCParamNoDefaultALPN, Value: []byte{}}
+	alpn := []byte{2, 'h', '2', 2, 'h', '3'}
 	tests := []struct {
 		name              string
-		serviceParameters []dnsmessage.SVCParam
+		serviceParameters map[dnsmessage.SVCParamKey][]byte
 	}{
 		{
-			name:              "encrypted DNS without an address",
-			serviceParameters: []dnsmessage.SVCParam{alpn, noDefaultALPN},
+			name: "encrypted DNS without an address",
+			serviceParameters: map[dnsmessage.SVCParamKey][]byte{
+				dnsmessage.SVCParamALPN:          alpn,
+				dnsmessage.SVCParamNoDefaultALPN: {},
+			},
 		},
 		{
 			name: "opaque no-default-alpn value",
-			serviceParameters: []dnsmessage.SVCParam{
-				alpn,
-				{Key: dnsmessage.SVCParamNoDefaultALPN, Value: []byte{1}},
+			serviceParameters: map[dnsmessage.SVCParamKey][]byte{
+				dnsmessage.SVCParamALPN:          alpn,
+				dnsmessage.SVCParamNoDefaultALPN: {1},
 			},
 		},
 		{
 			name:              "no-default-alpn without ALPN",
-			serviceParameters: []dnsmessage.SVCParam{noDefaultALPN},
+			serviceParameters: map[dnsmessage.SVCParamKey][]byte{dnsmessage.SVCParamNoDefaultALPN: {}},
 		},
 	}
 
@@ -191,48 +193,38 @@ func TestDNSConfigurationValidServiceParameters(t *testing.T) {
 }
 
 func TestDNSConfigurationInvalidServiceParameters(t *testing.T) {
-	alpn := dnsmessage.SVCParam{Key: dnsmessage.SVCParamALPN, Value: []byte{2, 'h', '2', 2, 'h', '3'}}
+	alpn := []byte{2, 'h', '2', 2, 'h', '3'}
 	tests := []struct {
 		name                     string
 		authenticationDomainName string
 		ipv4Addresses            []netip.Addr
-		serviceParameters        []dnsmessage.SVCParam
+		serviceParameters        map[dnsmessage.SVCParamKey][]byte
 		err                      string
 	}{
 		{
-			name:                     "unordered keys",
-			authenticationDomainName: "resolver.example",
-			serviceParameters: []dnsmessage.SVCParam{
-				{Key: dnsmessage.SVCParamPort},
-				alpn,
-			},
-			err: "strictly increasing order",
-		},
-		{
 			name:                     "parameters too long",
 			authenticationDomainName: "resolver.example",
-			serviceParameters: []dnsmessage.SVCParam{{
-				Key:   dnsmessage.SVCParamPort,
-				Value: make([]byte, maxServiceParametersLen),
-			}},
+			serviceParameters: map[dnsmessage.SVCParamKey][]byte{
+				dnsmessage.SVCParamPort: make([]byte, maxServiceParametersLen),
+			},
 			err: "service parameters too long",
 		},
 		{
 			name:                     "IPv4 hint",
 			authenticationDomainName: "resolver.example",
-			serviceParameters:        []dnsmessage.SVCParam{{Key: dnsmessage.SVCParamIPv4Hint}},
+			serviceParameters:        map[dnsmessage.SVCParamKey][]byte{dnsmessage.SVCParamIPv4Hint: nil},
 			err:                      "service parameter IPv4Hint is not allowed",
 		},
 		{
 			name:                     "IPv6 hint",
 			authenticationDomainName: "resolver.example",
-			serviceParameters:        []dnsmessage.SVCParam{{Key: dnsmessage.SVCParamIPv6Hint}},
+			serviceParameters:        map[dnsmessage.SVCParamKey][]byte{dnsmessage.SVCParamIPv6Hint: nil},
 			err:                      "service parameter IPv6Hint is not allowed",
 		},
 		{
 			name:              "ALPN without authentication domain name",
 			ipv4Addresses:     []netip.Addr{netip.MustParseAddr("192.0.2.53")},
-			serviceParameters: []dnsmessage.SVCParam{alpn},
+			serviceParameters: map[dnsmessage.SVCParamKey][]byte{dnsmessage.SVCParamALPN: alpn},
 			err:               "ALPN service parameters require an authentication domain name",
 		},
 		{

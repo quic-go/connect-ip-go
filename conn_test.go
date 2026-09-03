@@ -102,10 +102,9 @@ func TestDNSConfiguration(t *testing.T) {
 				IPv4Addresses:            []netip.Addr{netip.MustParseAddr("192.0.2.53")},
 				IPv6Addresses:            []netip.Addr{netip.MustParseAddr("2001:db8::53")},
 				AuthenticationDomainName: "resolver.example",
-				ServiceParameters: []dnsmessage.SVCParam{{
-					Key:   dnsmessage.SVCParamPort,
-					Value: []byte{0x21, 0x35},
-				}},
+				ServiceParameters: map[dnsmessage.SVCParamKey][]byte{
+					dnsmessage.SVCParamPort: {0x21, 0x35},
+				},
 			}},
 			InternalDomains: []string{"internal.example"},
 			SearchDomains:   []string{"internal.example", "example"},

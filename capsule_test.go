@@ -341,10 +341,9 @@ func TestParseDNSAssignCapsule(t *testing.T) {
 					IPv4Addresses:            []netip.Addr{netip.MustParseAddr("192.0.2.33")},
 					IPv6Addresses:            []netip.Addr{netip.MustParseAddr("2001:db8::1")},
 					AuthenticationDomainName: "resolver.example",
-					ServiceParameters: []dnsmessage.SVCParam{{
-						Key:   dnsmessage.SVCParamPort,
-						Value: []byte{0x21, 0x35},
-					}},
+					ServiceParameters: map[dnsmessage.SVCParamKey][]byte{
+						dnsmessage.SVCParamPort: {0x21, 0x35},
+					},
 				}},
 				InternalDomains: []string{"internal.example"},
 				SearchDomains:   []string{"internal.example", "example"},
@@ -367,9 +366,9 @@ func TestWriteDNSAssignCapsule(t *testing.T) {
 			Nameservers: []DNSNameserver{{
 				ServicePriority:          1,
 				AuthenticationDomainName: "masque.example.org",
-				ServiceParameters: []dnsmessage.SVCParam{
-					{Key: dnsmessage.SVCParamALPN, Value: []byte{2, 'h', '3'}},
-					{Key: dnsmessage.SVCParamNoDefaultALPN, Value: []byte{}},
+				ServiceParameters: map[dnsmessage.SVCParamKey][]byte{
+					dnsmessage.SVCParamNoDefaultALPN: {},
+					dnsmessage.SVCParamALPN:          {2, 'h', '3'},
 				},
 			}},
 			InternalDomains: []string{""},
@@ -392,6 +391,37 @@ func TestWriteDNSAssignCapsule(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, capsule, parsed)
 	require.Zero(t, r.Len())
+}
+
+func TestWriteDNSAssignCapsuleSortsServiceParameters(t *testing.T) {
+	capsule := &dnsAssignCapsule{DNSConfigurations: []DNSConfiguration{{
+		Nameservers: []DNSNameserver{{
+			ServicePriority:          1,
+			AuthenticationDomainName: "resolver.example",
+			ServiceParameters: map[dnsmessage.SVCParamKey][]byte{
+				dnsmessage.SVCParamPort:          {0, 53},
+				dnsmessage.SVCParamNoDefaultALPN: {},
+				dnsmessage.SVCParamALPN:          {2, 'h', '3'},
+			},
+		}},
+	}}}
+
+	payload := quicvarint.Append(nil, 1) // Nameserver Count
+	payload = binary.BigEndian.AppendUint16(payload, 1)
+	payload = quicvarint.Append(payload, 0) // IPv4 Address Count
+	payload = quicvarint.Append(payload, 0) // IPv6 Address Count
+	payload = appendDomain(payload, "resolver.example")
+	payload = quicvarint.Append(payload, 17) // Service Parameters Length
+	payload = append(payload, 0, 1, 0, 3, 2, 'h', '3')
+	payload = append(payload, 0, 2, 0, 0)
+	payload = append(payload, 0, 3, 0, 2, 0, 53)
+	payload = quicvarint.Append(payload, 0) // Internal Domain Count
+	payload = quicvarint.Append(payload, 0) // Search Domain Count
+	expected := quicvarint.Append(nil, uint64(capsuleTypeDNSAssign))
+	expected = quicvarint.Append(expected, uint64(len(payload)))
+	expected = append(expected, payload...)
+
+	require.Equal(t, expected, capsule.append(nil))
 }
 
 func TestParseDNSAssignCapsuleInvalid(t *testing.T) {
@@ -502,6 +532,21 @@ func TestParseDNSAssignCapsuleInvalid(t *testing.T) {
 		require.ErrorContains(t, err, "strictly increasing order")
 	})
 
+	t.Run("duplicate service parameters", func(t *testing.T) {
+		payload := quicvarint.Append(nil, 1) // Nameserver Count
+		payload = binary.BigEndian.AppendUint16(payload, 1)
+		payload = quicvarint.Append(payload, 0) // IPv4 Address Count
+		payload = quicvarint.Append(payload, 0) // IPv6 Address Count
+		payload = appendDomain(payload, "resolver.example")
+		payload = quicvarint.Append(payload, 8)
+		payload = append(payload, 0, 3, 0, 0, 0, 3, 0, 0)
+		payload = quicvarint.Append(payload, 0)
+		payload = quicvarint.Append(payload, 0)
+
+		_, err := parseDNSAssignCapsule(newCapsuleReader(t, capsuleTypeDNSAssign, payload))
+		require.ErrorContains(t, err, "strictly increasing order")
+	})
+
 	t.Run("incomplete capsule", func(t *testing.T) {
 		data := (&dnsAssignCapsule{DNSConfigurations: []DNSConfiguration{
 			{
@@ -510,10 +555,9 @@ func TestParseDNSAssignCapsuleInvalid(t *testing.T) {
 					IPv4Addresses:            []netip.Addr{netip.MustParseAddr("192.0.2.53")},
 					IPv6Addresses:            []netip.Addr{netip.MustParseAddr("2001:db8::53")},
 					AuthenticationDomainName: "resolver.example",
-					ServiceParameters: []dnsmessage.SVCParam{{
-						Key:   dnsmessage.SVCParamPort,
-						Value: []byte{0x21, 0x35},
-					}},
+					ServiceParameters: map[dnsmessage.SVCParamKey][]byte{
+						dnsmessage.SVCParamPort: {0x21, 0x35},
+					},
 				}},
 				InternalDomains: []string{"internal.example"},
 				SearchDomains:   []string{"internal.example", "example"},

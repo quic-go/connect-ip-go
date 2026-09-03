@@ -32,7 +32,9 @@ type DNSNameserver struct {
 	// U-labels are rejected. It may be empty only when the nameserver supports
 	// unencrypted DNS exclusively.
 	AuthenticationDomainName string
-	ServiceParameters        []dnsmessage.SVCParam
+	// ServiceParameters is the set of SVCB parameters that apply to this nameserver.
+	// Each map value is the wire-format SvcParamValue for its key.
+	ServiceParameters map[dnsmessage.SVCParamKey][]byte
 }
 
 // DNSConfiguration describes the DNS Configuration structure defined by
@@ -85,21 +87,18 @@ func (c DNSConfiguration) validate() error {
 		}
 		var serviceParametersLen int
 		var hasALPN, hasNoDefaultALPN bool
-		for i, p := range ns.ServiceParameters {
-			if i > 0 && p.Key <= ns.ServiceParameters[i-1].Key {
-				return errors.New("service parameter keys must be in strictly increasing order")
-			}
-			if len(p.Value) > maxServiceParametersLen {
+		for k, v := range ns.ServiceParameters {
+			if len(v) > maxServiceParametersLen {
 				return errors.New("service parameter value too long")
 			}
-			serviceParametersLen += 4 + len(p.Value)
-			switch p.Key {
+			serviceParametersLen += 4 + len(v)
+			switch k {
 			case dnsmessage.SVCParamALPN:
 				hasALPN = true
 			case dnsmessage.SVCParamNoDefaultALPN:
 				hasNoDefaultALPN = true
 			case dnsmessage.SVCParamIPv4Hint, dnsmessage.SVCParamIPv6Hint:
-				return fmt.Errorf("service parameter %s is not allowed", p.Key)
+				return fmt.Errorf("service parameter %s is not allowed", k)
 			}
 		}
 		if serviceParametersLen > maxServiceParametersLen {
