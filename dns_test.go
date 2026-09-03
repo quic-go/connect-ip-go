@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"golang.org/x/net/dns/dnsmessage"
 )
 
 func TestDNSConfigurationDomainValidation(t *testing.T) {
@@ -19,6 +20,7 @@ func TestDNSConfigurationDomainValidation(t *testing.T) {
 			configuration: DNSConfiguration{
 				Nameservers: []DNSNameserver{{
 					ServicePriority:          1,
+					IPv4Addresses:            []netip.Addr{netip.MustParseAddr("192.0.2.53")},
 					AuthenticationDomainName: "xn--bcher-kva.example",
 				}},
 				InternalDomains: []string{"xn--bcher-kva.internal.example"},
@@ -150,4 +152,97 @@ func TestDNSConfigurationIPv6ZoneValidation(t *testing.T) {
 		}}}
 		require.ErrorContains(t, configuration.validate(), "IPv6 address with zone")
 	})
+}
+
+func TestDNSConfigurationValidServiceParameters(t *testing.T) {
+	alpn := []byte{2, 'h', '2', 2, 'h', '3'}
+	tests := []struct {
+		name              string
+		serviceParameters map[dnsmessage.SVCParamKey][]byte
+	}{
+		{
+			name: "encrypted DNS without an address",
+			serviceParameters: map[dnsmessage.SVCParamKey][]byte{
+				dnsmessage.SVCParamALPN:          alpn,
+				dnsmessage.SVCParamNoDefaultALPN: {},
+			},
+		},
+		{
+			name: "opaque no-default-alpn value",
+			serviceParameters: map[dnsmessage.SVCParamKey][]byte{
+				dnsmessage.SVCParamALPN:          alpn,
+				dnsmessage.SVCParamNoDefaultALPN: {1},
+			},
+		},
+		{
+			name:              "no-default-alpn without ALPN",
+			serviceParameters: map[dnsmessage.SVCParamKey][]byte{dnsmessage.SVCParamNoDefaultALPN: {}},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			configuration := DNSConfiguration{Nameservers: []DNSNameserver{{
+				ServicePriority:          1,
+				AuthenticationDomainName: "resolver.example",
+				ServiceParameters:        test.serviceParameters,
+			}}}
+			require.NoError(t, configuration.validate())
+		})
+	}
+}
+
+func TestDNSConfigurationInvalidServiceParameters(t *testing.T) {
+	alpn := []byte{2, 'h', '2', 2, 'h', '3'}
+	tests := []struct {
+		name                     string
+		authenticationDomainName string
+		ipv4Addresses            []netip.Addr
+		serviceParameters        map[dnsmessage.SVCParamKey][]byte
+		err                      string
+	}{
+		{
+			name:                     "parameters too long",
+			authenticationDomainName: "resolver.example",
+			serviceParameters: map[dnsmessage.SVCParamKey][]byte{
+				dnsmessage.SVCParamPort: make([]byte, maxServiceParametersLen),
+			},
+			err: "service parameters too long",
+		},
+		{
+			name:                     "IPv4 hint",
+			authenticationDomainName: "resolver.example",
+			serviceParameters:        map[dnsmessage.SVCParamKey][]byte{dnsmessage.SVCParamIPv4Hint: nil},
+			err:                      "service parameter IPv4Hint is not allowed",
+		},
+		{
+			name:                     "IPv6 hint",
+			authenticationDomainName: "resolver.example",
+			serviceParameters:        map[dnsmessage.SVCParamKey][]byte{dnsmessage.SVCParamIPv6Hint: nil},
+			err:                      "service parameter IPv6Hint is not allowed",
+		},
+		{
+			name:              "ALPN without authentication domain name",
+			ipv4Addresses:     []netip.Addr{netip.MustParseAddr("192.0.2.53")},
+			serviceParameters: map[dnsmessage.SVCParamKey][]byte{dnsmessage.SVCParamALPN: alpn},
+			err:               "ALPN service parameters require an authentication domain name",
+		},
+		{
+			name:                     "unencrypted DNS without an address",
+			authenticationDomainName: "resolver.example",
+			err:                      "nameserver must have an address when no-default-alpn is omitted",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			configuration := DNSConfiguration{Nameservers: []DNSNameserver{{
+				ServicePriority:          1,
+				IPv4Addresses:            test.ipv4Addresses,
+				AuthenticationDomainName: test.authenticationDomainName,
+				ServiceParameters:        test.serviceParameters,
+			}}}
+			require.ErrorContains(t, configuration.validate(), test.err)
+		})
+	}
 }
