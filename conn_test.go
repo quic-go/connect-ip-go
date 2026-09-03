@@ -101,20 +101,20 @@ func TestDNSConfiguration(t *testing.T) {
 				ServicePriority:          1,
 				IPv4Addresses:            []netip.Addr{netip.MustParseAddr("192.0.2.53")},
 				IPv6Addresses:            []netip.Addr{netip.MustParseAddr("2001:db8::53")},
-				AuthenticationDomainName: "resolver.example",
+				AuthenticationDomainName: "resolver.example.",
 				ServiceParameters: map[dnsmessage.SVCParamKey][]byte{
 					dnsmessage.SVCParamPort: {0x21, 0x35},
 				},
 			}},
-			InternalDomains: []string{"internal.example"},
-			SearchDomains:   []string{"internal.example", "example"},
+			InternalDomains: []string{"internal.example."},
+			SearchDomains:   []string{"internal.example.", "example."},
 		},
 		{
 			Nameservers: []DNSNameserver{{
 				ServicePriority: 2,
 				IPv4Addresses:   []netip.Addr{netip.MustParseAddr("198.51.100.53")},
 			}},
-			InternalDomains: []string{"other.example"},
+			InternalDomains: []string{"other.example."},
 		},
 	}
 
@@ -176,7 +176,7 @@ func TestDNSConfiguration(t *testing.T) {
 		require.ErrorContains(t,
 			conn.SendDNSConfiguration([]DNSConfiguration{
 				{
-					InternalDomains: []string{"bücher.example"},
+					InternalDomains: []string{"bücher.example."},
 				},
 			}),
 			"invalid internal domain name: must use IDNA A-label form",
