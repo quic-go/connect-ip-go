@@ -24,6 +24,12 @@ const (
 	capsuleTypePREF64    http3.CapsuleType = 0x274c0fbc
 )
 
+// Bound the memory used to parse and retain a peer's addresses and routes.
+const (
+	maxAddressesPerCapsule = 8192
+	maxRoutesPerCapsule    = 8192
+)
+
 // addressAssignCapsule represents an ADDRESS_ASSIGN capsule
 type addressAssignCapsule struct {
 	AssignedAddresses []AssignedAddress
@@ -54,14 +60,14 @@ func (r RequestedAddress) len() int {
 	return quicvarint.Len(r.RequestID) + 1 + r.IPPrefix.Addr().BitLen()/8 + 1
 }
 
-func parseAddressAssignCapsule(r io.Reader) (*addressAssignCapsule, error) {
+func parseAddressAssignCapsule(r http3.CapsuleReader) (*addressAssignCapsule, error) {
 	var assignedAddresses []AssignedAddress
-	for {
+	for r.Remaining() > 0 {
+		if len(assignedAddresses) >= maxAddressesPerCapsule {
+			return nil, fmt.Errorf("ADDRESS_ASSIGN capsule contains too many addresses (maximum %d)", maxAddressesPerCapsule)
+		}
 		requestID, prefix, err := parseAddress(r)
 		if err != nil {
-			if err == io.EOF {
-				break
-			}
 			return nil, err
 		}
 		assignedAddresses = append(assignedAddresses, AssignedAddress{RequestID: requestID, IPPrefix: prefix})
@@ -91,14 +97,14 @@ func (c *addressAssignCapsule) append(b []byte) []byte {
 	return b
 }
 
-func parseAddressRequestCapsule(r io.Reader) (*addressRequestCapsule, error) {
+func parseAddressRequestCapsule(r http3.CapsuleReader) (*addressRequestCapsule, error) {
 	var requestedAddresses []RequestedAddress
-	for {
+	for r.Remaining() > 0 {
+		if len(requestedAddresses) >= maxAddressesPerCapsule {
+			return nil, fmt.Errorf("ADDRESS_REQUEST capsule contains too many addresses (maximum %d)", maxAddressesPerCapsule)
+		}
 		requestID, prefix, err := parseAddress(r)
 		if err != nil {
-			if err == io.EOF {
-				break
-			}
 			return nil, err
 		}
 		requestedAddresses = append(requestedAddresses, RequestedAddress{RequestID: requestID, IPPrefix: prefix})
@@ -190,14 +196,14 @@ func (r IPRoute) len() int { return 1 + r.StartIP.BitLen()/8 + r.EndIP.BitLen()/
 // this conversion can result in a large number of prefixes.
 func (r IPRoute) Prefixes() []netip.Prefix { return rangeToPrefixes(r.StartIP, r.EndIP) }
 
-func parseRouteAdvertisementCapsule(r io.Reader) (*routeAdvertisementCapsule, error) {
+func parseRouteAdvertisementCapsule(r http3.CapsuleReader) (*routeAdvertisementCapsule, error) {
 	var ranges []IPRoute
-	for {
+	for r.Remaining() > 0 {
+		if len(ranges) >= maxRoutesPerCapsule {
+			return nil, fmt.Errorf("ROUTE_ADVERTISEMENT capsule contains too many routes (maximum %d)", maxRoutesPerCapsule)
+		}
 		ipRange, err := parseIPAddressRange(r)
 		if err != nil {
-			if err == io.EOF {
-				break
-			}
 			return nil, err
 		}
 		ranges = append(ranges, ipRange)

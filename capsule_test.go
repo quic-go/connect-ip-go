@@ -48,6 +48,24 @@ func testIncompleteCapsule(t *testing.T, data []byte, parse func(http3.CapsuleRe
 	}
 }
 
+func testCapsuleEntryLimit[T any](t *testing.T, typ http3.CapsuleType, limit int, entry []byte, parse func(http3.CapsuleReader) (*T, error)) {
+	t.Helper()
+	payload := bytes.Repeat(entry, limit)
+	r := newCapsuleReader(t, typ, payload)
+	_, err := parse(r)
+	require.NoError(t, err)
+	require.Zero(t, r.Remaining())
+
+	// Reject as soon as another entry is declared, without waiting for its bytes.
+	data := quicvarint.Append(nil, uint64(typ))
+	data = quicvarint.Append(data, uint64(len(payload)+1))
+	_, r, err = http3.NewCapsuleParser(bytes.NewReader(append(data, payload...))).Next()
+	require.NoError(t, err)
+	_, err = parse(r)
+	require.ErrorContains(t, err, "too many")
+	require.Equal(t, int64(1), r.Remaining())
+}
+
 func TestParseAddressAssignCapsule(t *testing.T) {
 	addr1 := quicvarint.Append(nil, 1337) // Request ID
 	addr1 = append(addr1, 4)              // IPv4
@@ -79,6 +97,11 @@ func TestParseAddressAssignCapsule(t *testing.T) {
 	require.Zero(t, r.Len())
 }
 
+func TestParseAddressAssignCapsuleLimit(t *testing.T) {
+	entry := []byte{1, 4, 192, 0, 2, 1, 32} // Request ID 1, 192.0.2.1/32.
+	testCapsuleEntryLimit(t, capsuleTypeAddressAssign, maxAddressesPerCapsule, entry, parseAddressAssignCapsule)
+}
+
 func TestWriteAddressAssignCapsule(t *testing.T) {
 	c := &addressAssignCapsule{
 		AssignedAddresses: []AssignedAddress{
@@ -98,13 +121,13 @@ func TestWriteAddressAssignCapsule(t *testing.T) {
 }
 
 func TestParseAddressAssignCapsuleInvalid(t *testing.T) {
-	testParseAddressCapsuleInvalid(t, capsuleTypeAddressAssign, func(r io.Reader) error {
-		_, err := parseAddressAssignCapsule(quicvarint.NewReader(r))
+	testParseAddressCapsuleInvalid(t, capsuleTypeAddressAssign, func(r http3.CapsuleReader) error {
+		_, err := parseAddressAssignCapsule(r)
 		return err
 	})
 }
 
-func testParseAddressCapsuleInvalid(t *testing.T, typ http3.CapsuleType, f func(r io.Reader) error) {
+func testParseAddressCapsuleInvalid(t *testing.T, typ http3.CapsuleType, f func(r http3.CapsuleReader) error) {
 	t.Run("invalid IP version", func(t *testing.T) {
 		addr1 := quicvarint.Append(nil, 1337) // Request ID
 		addr1 = append(addr1, 5)              // Invalid IP version (not 4 or 6)
@@ -150,7 +173,7 @@ func testParseAddressCapsuleInvalid(t *testing.T, typ http3.CapsuleType, f func(
 			t.Fatalf("unexpected capsule type: %d", typ)
 		}
 
-		testIncompleteCapsule(t, data, func(r http3.CapsuleReader) error { return f(r) })
+		testIncompleteCapsule(t, data, f)
 	})
 }
 
@@ -184,6 +207,11 @@ func TestParseAddressRequestCapsule(t *testing.T) {
 	require.Zero(t, r.Len())
 }
 
+func TestParseAddressRequestCapsuleLimit(t *testing.T) {
+	entry := []byte{1, 4, 192, 0, 2, 1, 32} // Request ID 1, 192.0.2.1/32.
+	testCapsuleEntryLimit(t, capsuleTypeAddressRequest, maxAddressesPerCapsule, entry, parseAddressRequestCapsule)
+}
+
 func TestWriteAddressRequestCapsule(t *testing.T) {
 	c := &addressRequestCapsule{
 		RequestedAddresses: []RequestedAddress{
@@ -203,8 +231,8 @@ func TestWriteAddressRequestCapsule(t *testing.T) {
 }
 
 func TestParseAddressRequestCapsuleInvalid(t *testing.T) {
-	testParseAddressCapsuleInvalid(t, capsuleTypeAddressRequest, func(r io.Reader) error {
-		_, err := parseAddressRequestCapsule(quicvarint.NewReader(r))
+	testParseAddressCapsuleInvalid(t, capsuleTypeAddressRequest, func(r http3.CapsuleReader) error {
+		_, err := parseAddressRequestCapsule(r)
 		return err
 	})
 }
@@ -246,6 +274,11 @@ func TestParseRouteAdvertisementCapsule(t *testing.T) {
 		capsule.IPAddressRanges[1].Prefixes(),
 	)
 	require.Zero(t, r.Len())
+}
+
+func TestParseRouteAdvertisementCapsuleLimit(t *testing.T) {
+	entry := []byte{4, 192, 0, 2, 1, 192, 0, 2, 1, 0} // 192.0.2.1, all protocols.
+	testCapsuleEntryLimit(t, capsuleTypeRouteAdvertisement, maxRoutesPerCapsule, entry, parseRouteAdvertisementCapsule)
 }
 
 func TestWriteRouteAdvertisementCapsule(t *testing.T) {

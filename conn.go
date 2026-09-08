@@ -37,6 +37,7 @@ type http3Stream interface {
 	ReceiveDatagram(context.Context) ([]byte, error)
 	SendDatagram([]byte) error
 	CancelRead(quic.StreamErrorCode)
+	CancelWrite(quic.StreamErrorCode)
 }
 
 var (
@@ -88,14 +89,22 @@ func newProxiedConn(str http3Stream, closeConn func() error) *Conn {
 		closeChan:               make(chan struct{}),
 	}
 	go func() {
-		if err := c.readFromStream(); err != nil {
+		err := c.readFromStream()
+		if err != nil {
 			log.Printf("handling stream failed: %v", err)
-			c.mu.Lock()
-			if c.closeErr == nil {
-				c.closeErr = &CloseError{Remote: true}
-				close(c.closeChan)
-			}
-			c.mu.Unlock()
+		}
+		c.mu.Lock()
+		if c.closeErr == nil {
+			c.closeErr = &CloseError{Remote: true}
+			close(c.closeChan)
+		}
+		c.mu.Unlock()
+		if err != nil {
+			// Abort the session without consuming the remaining capsule payload.
+			c.str.CancelRead(quic.StreamErrorCode(http3.ErrCodeExcessiveLoad))
+			c.str.CancelWrite(quic.StreamErrorCode(http3.ErrCodeExcessiveLoad))
+		} else {
+			c.str.Close()
 		}
 	}()
 	go func() {
@@ -299,10 +308,12 @@ func (c *Conn) Routes(ctx context.Context) ([]IPRoute, error) {
 }
 
 func (c *Conn) readFromStream() error {
-	defer c.str.Close()
 	p := http3.NewCapsuleParser(c.str)
 	for {
 		t, cr, err := p.Next()
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
 		if err != nil {
 			return err
 		}
