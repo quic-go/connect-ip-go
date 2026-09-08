@@ -87,11 +87,14 @@ func TestCapsuleQueueLimit(t *testing.T) {
 	for range maxQueuedCapsules {
 		require.NoError(t, conn.AssignAddresses(nil))
 	}
+	go func() {
+		_, _ = conn.Routes(context.Background()) // wait for shutdown before releasing the mock writer
+		for range maxQueuedCapsules + 1 {
+			<-writes
+		}
+	}()
 	require.ErrorContains(t, conn.AssignAddresses(nil), "capsule queue full")
 	require.ErrorIs(t, conn.AssignAddresses(nil), net.ErrClosed)
-
-	// Let the writer finish the in-progress write and observe the closed connection.
-	<-writes
 }
 
 func TestDNSConfiguration(t *testing.T) {
