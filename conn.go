@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"slices"
 	"sync"
+	"time"
 
 	"golang.org/x/net/ipv4"
 	"golang.org/x/net/ipv6"
@@ -38,6 +39,7 @@ type http3Stream interface {
 	SendDatagram([]byte) error
 	CancelRead(quic.StreamErrorCode)
 	CancelWrite(quic.StreamErrorCode)
+	SetWriteDeadline(time.Time) error
 }
 
 var (
@@ -64,8 +66,7 @@ type Conn struct {
 	str         http3Stream
 	closeConn   func() error
 	writeNotify chan struct{}
-	writeDone   chan struct{}
-	writeErr    error // set before writeDone is closed
+	writeDone   chan error
 
 	assignedAddressUpdates  chan []netip.Prefix
 	availableRouteUpdates   chan []IPRoute
@@ -87,7 +88,7 @@ func newProxiedConn(str http3Stream, closeConn func() error) *Conn {
 		str:                     str,
 		closeConn:               closeConn,
 		writeNotify:             make(chan struct{}, 1),
-		writeDone:               make(chan struct{}),
+		writeDone:               make(chan error, 1),
 		assignedAddressUpdates:  make(chan []netip.Prefix, 1),
 		availableRouteUpdates:   make(chan []IPRoute, 1),
 		dnsConfigurationUpdates: make(chan []DNSConfiguration, 1),
@@ -109,24 +110,28 @@ func newProxiedConn(str http3Stream, closeConn func() error) *Conn {
 				c.str.CancelWrite(quic.StreamErrorCode(http3.ErrCodeExcessiveLoad))
 				close(c.writeNotify)
 			} else {
-				c.queueWrite(streamWrite{Fin: true})
+				_ = c.queueWrite(streamWrite{Fin: true})
 			}
 		}
 		c.mu.Unlock()
 	}()
 	go func() {
-		c.writeErr = c.writeToStream()
-		if c.writeErr != nil {
-			log.Printf("writing to stream failed: %v", c.writeErr)
+		err := c.writeToStream()
+		if err != nil {
+			log.Printf("writing to stream failed: %v", err)
 			c.mu.Lock()
 			if c.closeErr == nil {
 				c.closeErr = &CloseError{Remote: true}
 				close(c.closeChan)
 				c.str.CancelRead(quic.StreamErrorCode(http3.ErrCodeExcessiveLoad))
 				c.str.CancelWrite(quic.StreamErrorCode(http3.ErrCodeExcessiveLoad))
+			} else {
+				// A write can time out while graceful shutdown is pending.
+				c.str.CancelWrite(quic.StreamErrorCode(http3.ErrCodeNoError))
 			}
 			c.mu.Unlock()
 		}
+		c.writeDone <- err
 		close(c.writeDone)
 	}()
 	return c
@@ -264,7 +269,10 @@ func (c *Conn) sendCapsule(capsuleData []byte) error {
 }
 
 func (c *Conn) queueWrite(w streamWrite) error {
-	if !w.Fin && len(c.queuedWrites) >= maxQueuedCapsules {
+	if w.Fin {
+		// Interrupt pending capsule writes so shutdown cannot stall.
+		_ = c.str.SetWriteDeadline(time.Now())
+	} else if len(c.queuedWrites) >= maxQueuedCapsules {
 		c.closeErr = &CloseError{Remote: false}
 		close(c.closeChan)
 		c.str.CancelRead(quic.StreamErrorCode(http3.ErrCodeExcessiveLoad))
@@ -272,7 +280,9 @@ func (c *Conn) queueWrite(w streamWrite) error {
 		close(c.writeNotify)
 		return errors.New("connect-ip: capsule queue full")
 	}
+
 	c.queuedWrites = append(c.queuedWrites, w)
+
 	select {
 	case c.writeNotify <- struct{}{}:
 	default:
@@ -562,17 +572,17 @@ func (c *Conn) Close() error {
 	if c.closeErr == nil {
 		c.closeErr = &CloseError{Remote: false}
 		close(c.closeChan)
-		c.queueWrite(streamWrite{Fin: true})
+		_ = c.queueWrite(streamWrite{Fin: true})
 	}
 	closeConn := c.closeConn
 	c.closeConn = nil
 	c.mu.Unlock()
-	<-c.writeDone
+	err := <-c.writeDone
 	c.str.CancelRead(quic.StreamErrorCode(http3.ErrCodeNoError))
 	if closeConn != nil {
-		return errors.Join(c.writeErr, closeConn())
+		return errors.Join(err, closeConn())
 	}
-	return c.writeErr
+	return err
 }
 
 func ipVersion(b []byte) uint8 { return b[0] >> 4 }
