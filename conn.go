@@ -52,8 +52,8 @@ var (
 // On IPv6, the minimum MTU of a link is 1280 bytes.
 const minMTU = 1280
 
-// Capsules normally don't remain queued: they are written to the CONNECT stream
-// immediately. The queue only grows if the peer falls behind processing the stream.
+// Bound pending capsules in both directions. Queues only grow when the peer
+// falls behind reading the stream or the application falls behind receiving updates.
 const maxQueuedCapsules = 128
 
 type streamWrite struct {
@@ -68,16 +68,18 @@ type Conn struct {
 	writeNotify chan struct{}
 	writeDone   chan error
 
-	assignedAddressUpdates  chan []netip.Prefix
+	assignedAddressUpdates  chan []AssignedAddress
+	addressRequests         chan *addressRequestCapsule
 	availableRouteUpdates   chan []IPRoute
 	dnsConfigurationUpdates chan []DNSConfiguration
 	pref64Updates           chan []netip.Prefix
 
-	mu                sync.Mutex
-	queuedWrites      []streamWrite
-	peerAddresses     []netip.Prefix // IP prefixes that we assigned to the peer
-	localRoutes       []IPRoute      // IP routes that we advertised to the peer
-	assignedAddresses []netip.Prefix
+	mu                   sync.Mutex
+	queuedWrites         []streamWrite
+	peerAddresses        []netip.Prefix // IP prefixes that we assigned to the peer
+	localRoutes          []IPRoute      // IP routes that we advertised to the peer
+	assignedAddresses    []netip.Prefix
+	lastAddressRequestID AddressRequestID
 
 	closeChan chan struct{}
 	closeErr  error
@@ -89,7 +91,8 @@ func newProxiedConn(str http3Stream, closeConn func() error) *Conn {
 		closeConn:               closeConn,
 		writeNotify:             make(chan struct{}, 1),
 		writeDone:               make(chan error, 1),
-		assignedAddressUpdates:  make(chan []netip.Prefix, 1),
+		assignedAddressUpdates:  make(chan []AssignedAddress, maxQueuedCapsules),
+		addressRequests:         make(chan *addressRequestCapsule, maxQueuedCapsules),
 		availableRouteUpdates:   make(chan []IPRoute, 1),
 		dnsConfigurationUpdates: make(chan []DNSConfiguration, 1),
 		pref64Updates:           make(chan []netip.Prefix, 1),
@@ -165,35 +168,127 @@ func (c *Conn) AdvertiseRoute(routes []IPRoute) error {
 	return nil
 }
 
-// AssignAddresses schedules an assignment of address prefixes to the peer.
-// It returns once the assignment has been queued.
-func (c *Conn) AssignAddresses(prefixes []netip.Prefix) error {
-	capsule := &addressAssignCapsule{AssignedAddresses: make([]AssignedAddress, 0, len(prefixes))}
-	for _, p := range prefixes {
-		capsule.AssignedAddresses = append(capsule.AssignedAddresses, AssignedAddress{IPPrefix: p})
+// RequestAddresses requests address prefixes from the peer and returns once the
+// request is queued. It allocates a unique, nonzero ID for each prefix in input order.
+// The IDs have no semantic meaning and can be used to correlate assignments
+// returned by [Conn.ReceiveAddressAssignment] with the requested prefixes.
+//
+// Prefixes must be valid, with all bits outside the prefix set to zero.
+// An unspecified address (0.0.0.0 or ::) requests any address of that family,
+// with the prefix length indicating the preferred size.
+func (c *Conn) RequestAddresses(prefixes []netip.Prefix) ([]AddressRequestID, error) {
+	if len(prefixes) == 0 {
+		return nil, errors.New("connect-ip: address request must contain at least one prefix")
+	}
+	for i, p := range prefixes {
+		if !p.IsValid() || p != p.Masked() {
+			return nil, fmt.Errorf("connect-ip: invalid requested prefix %d: %s", i, p)
+		}
 	}
 
 	c.mu.Lock()
 	if c.closeErr != nil {
 		err := c.closeErr
 		c.mu.Unlock()
-		return err
+		return nil, err
 	}
+	ids := make([]AddressRequestID, len(prefixes))
+	for i := range ids {
+		ids[i] = c.lastAddressRequestID + AddressRequestID(i) + 1
+	}
+	capsule := &addressRequestCapsule{RequestIDs: ids, Prefixes: prefixes}
 	err := c.queueWrite(streamWrite{Data: capsule.append(nil)})
 	if err == nil {
-		c.peerAddresses = slices.Clone(prefixes)
+		c.lastAddressRequestID = ids[len(ids)-1]
 	}
 	c.mu.Unlock()
 	if err != nil {
 		_ = c.Close()
+		return nil, err
+	}
+	return ids, nil
+}
+
+// ReceiveAddressAssignment waits for the next complete address assignment,
+// Each assignment replaces the preceding one; request IDs only provide optional correlation.
+// Call this method in a loop from one goroutine.
+func (c *Conn) ReceiveAddressAssignment(ctx context.Context) ([]AssignedAddress, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case assignment := <-c.assignedAddressUpdates:
+		return assignment, nil
+	case <-c.closeChan:
+		// Deliver queued responses before reporting closure.
+		select {
+		case assignment := <-c.assignedAddressUpdates:
+			return assignment, nil
+		default:
+			return nil, c.closeErr
+		}
+	}
+}
+
+// ReceiveAddressRequest waits for the next address request from the peer.
+// This method should be called in a loop, and each request should be answered with [AddressRequest.Respond].
+func (c *Conn) ReceiveAddressRequest(ctx context.Context) (*AddressRequest, error) {
+	var requested *addressRequestCapsule
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case requested = <-c.addressRequests:
+	case <-c.closeChan:
+		select {
+		case requested = <-c.addressRequests:
+		default:
+			return nil, c.closeErr
+		}
+	}
+	return newAddressRequest(c, requested), nil
+}
+
+// AssignAddresses schedules an assignment of address prefixes to the peer.
+func (c *Conn) AssignAddresses(prefixes []netip.Prefix) error {
+	capsule := &addressAssignCapsule{}
+	if prefixes != nil {
+		capsule.AssignedAddresses = make([]AssignedAddress, len(prefixes))
+		for i, p := range prefixes {
+			capsule.AssignedAddresses[i] = AssignedAddress{IPPrefix: p}
+		}
+	}
+	return c.sendAddressAssignment(capsule)
+}
+
+func (c *Conn) sendAddressAssignment(capsule *addressAssignCapsule) error {
+	c.mu.Lock()
+	if c.closeErr != nil {
+		err := c.closeErr
+		c.mu.Unlock()
 		return err
 	}
+	if err := c.queueWrite(streamWrite{Data: capsule.append(nil)}); err != nil {
+		c.mu.Unlock()
+		_ = c.Close()
+		return err
+	}
+
+	var prefixes []netip.Prefix
+	// Preserve nil (no source restriction) versus an empty assignment.
+	if capsule.AssignedAddresses != nil {
+		prefixes = make([]netip.Prefix, 0, len(capsule.AssignedAddresses))
+	}
+	for _, assigned := range capsule.AssignedAddresses {
+		if !assigned.Rejected() {
+			prefixes = append(prefixes, assigned.IPPrefix)
+		}
+	}
+	c.peerAddresses = prefixes
+	c.mu.Unlock()
 	return nil
 }
 
 // SendDNSConfiguration schedules a DNS configuration update to the peer.
-// It returns once the update has been queued. The update supersedes the DNS
-// configuration previously sent on this connection.
+// The update supersedes the DNS configuration previously sent on this connection.
 //
 // To avoid leaking DNS traffic outside the tunnel, the application is responsible
 // for advertising the corresponding routes before calling this method. See
@@ -300,22 +395,6 @@ func queueLatest[T any](ch chan T, value T) {
 	}
 }
 
-// LocalPrefixes returns the prefixes that the peer currently assigned.
-// Note that at any point during the connection, the peer can change the assignment.
-// It is therefore recommended to call this function in a loop.
-func (c *Conn) LocalPrefixes(ctx context.Context) ([]netip.Prefix, error) {
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case <-c.closeChan:
-		return nil, c.closeErr
-	case prefixes := <-c.assignedAddressUpdates:
-		// Callers are expected to treat returned prefixes as immutable.
-		// Clone them defensively so accidental mutation cannot change connection state.
-		return slices.Clone(prefixes), nil
-	}
-}
-
 // Routes returns the routes that the peer currently advertised.
 // Note that at any point during the connection, the peer can change the advertised routes.
 // It is therefore recommended to call this function in a loop.
@@ -348,17 +427,28 @@ func (c *Conn) readFromStream() error {
 			}
 			prefixes := make([]netip.Prefix, 0, len(capsule.AssignedAddresses))
 			for _, assigned := range capsule.AssignedAddresses {
-				prefixes = append(prefixes, assigned.IPPrefix)
+				if !assigned.Rejected() {
+					prefixes = append(prefixes, assigned.IPPrefix)
+				}
 			}
 			c.mu.Lock()
 			c.assignedAddresses = prefixes
 			c.mu.Unlock()
-			queueLatest(c.assignedAddressUpdates, prefixes)
+			select {
+			case c.assignedAddressUpdates <- capsule.AssignedAddresses:
+			default:
+				return errors.New("connect-ip: address assignment queue full")
+			}
 		case capsuleTypeAddressRequest:
-			if _, err := parseAddressRequestCapsule(cr); err != nil {
+			capsule, err := parseAddressRequestCapsule(cr)
+			if err != nil {
 				return err
 			}
-			return errors.New("connect-ip: address request not yet supported")
+			select {
+			case c.addressRequests <- capsule:
+			default:
+				return errors.New("connect-ip: address request queue full")
+			}
 		case capsuleTypeRouteAdvertisement:
 			capsule, err := parseRouteAdvertisementCapsule(cr)
 			if err != nil {

@@ -37,27 +37,25 @@ type addressAssignCapsule struct {
 
 // AssignedAddress represents an Assigned Address within an ADDRESS_ASSIGN capsule
 type AssignedAddress struct {
-	RequestID uint64
+	// RequestID is zero for an unsolicited assignment.
+	RequestID AddressRequestID
 	IPPrefix  netip.Prefix
 }
 
+// Rejected reports whether the assignment is a refusal (0.0.0.0/32 or ::/128).
+func (a AssignedAddress) Rejected() bool {
+	return a.IPPrefix == rejectedIPv4Prefix || a.IPPrefix == rejectedIPv6Prefix
+}
+
 func (a AssignedAddress) len() int {
-	return quicvarint.Len(a.RequestID) + 1 + a.IPPrefix.Addr().BitLen()/8 + 1
+	return quicvarint.Len(uint64(a.RequestID)) + 1 + a.IPPrefix.Addr().BitLen()/8 + 1
 }
 
 // addressRequestCapsule represents an ADDRESS_REQUEST capsule
 type addressRequestCapsule struct {
-	RequestedAddresses []RequestedAddress
-}
-
-// RequestedAddress represents an Requested Address within an ADDRESS_REQUEST capsule
-type RequestedAddress struct {
-	RequestID uint64
-	IPPrefix  netip.Prefix
-}
-
-func (r RequestedAddress) len() int {
-	return quicvarint.Len(r.RequestID) + 1 + r.IPPrefix.Addr().BitLen()/8 + 1
+	// RequestIDs and Prefixes have matching lengths and order.
+	RequestIDs []AddressRequestID
+	Prefixes   []netip.Prefix
 }
 
 func parseAddressAssignCapsule(r http3.CapsuleReader) (*addressAssignCapsule, error) {
@@ -70,7 +68,7 @@ func parseAddressAssignCapsule(r http3.CapsuleReader) (*addressAssignCapsule, er
 		if err != nil {
 			return nil, err
 		}
-		assignedAddresses = append(assignedAddresses, AssignedAddress{RequestID: requestID, IPPrefix: prefix})
+		assignedAddresses = append(assignedAddresses, AssignedAddress{RequestID: AddressRequestID(requestID), IPPrefix: prefix})
 	}
 	return &addressAssignCapsule{AssignedAddresses: assignedAddresses}, nil
 }
@@ -85,7 +83,7 @@ func (c *addressAssignCapsule) append(b []byte) []byte {
 	b = quicvarint.Append(b, uint64(totalLen))
 
 	for _, addr := range c.AssignedAddresses {
-		b = quicvarint.Append(b, addr.RequestID)
+		b = quicvarint.Append(b, uint64(addr.RequestID))
 		if addr.IPPrefix.Addr().Is4() {
 			b = append(b, 4)
 		} else {
@@ -98,38 +96,45 @@ func (c *addressAssignCapsule) append(b []byte) []byte {
 }
 
 func parseAddressRequestCapsule(r http3.CapsuleReader) (*addressRequestCapsule, error) {
-	var requestedAddresses []RequestedAddress
+	if r.Remaining() == 0 {
+		return nil, errors.New("ADDRESS_REQUEST capsule contains no addresses")
+	}
+	capsule := &addressRequestCapsule{}
 	for r.Remaining() > 0 {
-		if len(requestedAddresses) >= maxAddressesPerCapsule {
+		if len(capsule.Prefixes) >= maxAddressesPerCapsule {
 			return nil, fmt.Errorf("ADDRESS_REQUEST capsule contains too many addresses (maximum %d)", maxAddressesPerCapsule)
 		}
 		requestID, prefix, err := parseAddress(r)
 		if err != nil {
 			return nil, err
 		}
-		requestedAddresses = append(requestedAddresses, RequestedAddress{RequestID: requestID, IPPrefix: prefix})
+		if requestID == 0 {
+			return nil, errors.New("ADDRESS_REQUEST capsule contains a zero request ID")
+		}
+		capsule.RequestIDs = append(capsule.RequestIDs, AddressRequestID(requestID))
+		capsule.Prefixes = append(capsule.Prefixes, prefix)
 	}
-	return &addressRequestCapsule{RequestedAddresses: requestedAddresses}, nil
+	return capsule, nil
 }
 
 func (c *addressRequestCapsule) append(b []byte) []byte {
 	var totalLen int
-	for _, addr := range c.RequestedAddresses {
-		totalLen += addr.len()
+	for i, p := range c.Prefixes {
+		totalLen += quicvarint.Len(uint64(c.RequestIDs[i])) + 1 + p.Addr().BitLen()/8 + 1
 	}
 
 	b = quicvarint.Append(b, uint64(capsuleTypeAddressRequest))
 	b = quicvarint.Append(b, uint64(totalLen))
 
-	for _, addr := range c.RequestedAddresses {
-		b = quicvarint.Append(b, addr.RequestID)
-		if addr.IPPrefix.Addr().Is4() {
+	for i, p := range c.Prefixes {
+		b = quicvarint.Append(b, uint64(c.RequestIDs[i]))
+		if p.Addr().Is4() {
 			b = append(b, 4)
 		} else {
 			b = append(b, 6)
 		}
-		b = append(b, addr.IPPrefix.Addr().AsSlice()...)
-		b = append(b, byte(addr.IPPrefix.Bits()))
+		b = append(b, p.Addr().AsSlice()...)
+		b = append(b, byte(p.Bits()))
 	}
 	return b
 }
