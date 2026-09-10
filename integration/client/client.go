@@ -151,7 +151,7 @@ func establishConn(proxyAddr netip.AddrPort, keyLog io.Writer) (*water.Interface
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to get routes: %w", err)
 	}
-	localPrefixes, err := ipconn.LocalPrefixes(ctx)
+	assigned, err := ipconn.ReceiveAddressAssignment(ctx)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to get local prefixes: %w", err)
 	}
@@ -166,7 +166,11 @@ func establishConn(proxyAddr netip.AddrPort, keyLog io.Writer) (*water.Interface
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to get TUN interface: %w", err)
 	}
-	for _, p := range localPrefixes {
+	for _, a := range assigned {
+		if a.Rejected() {
+			continue
+		}
+		p := a.IPPrefix
 		if err := netlink.AddrAdd(link, &netlink.Addr{IPNet: utils.PrefixToIPNet(p)}); err != nil {
 			return nil, nil, fmt.Errorf("failed to add address assigned by peer %s: %w", p, err)
 		}

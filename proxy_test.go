@@ -73,7 +73,7 @@ func TestAddressAssignment(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
-	_, err := server.Routes(ctx)
+	_, err := server.ReceiveAddressAssignment(ctx)
 	require.ErrorIs(t, err, context.DeadlineExceeded)
 
 	ctx, cancel = context.WithTimeout(context.Background(), time.Second)
@@ -81,15 +81,15 @@ func TestAddressAssignment(t *testing.T) {
 	pref1 := netip.MustParsePrefix("1.1.1.0/24")
 	pref2 := netip.MustParsePrefix("2001:db8::/64")
 	require.NoError(t, client.AssignAddresses([]netip.Prefix{pref1, pref2}))
-	routes, err := server.LocalPrefixes(ctx)
+	assigned, err := server.ReceiveAddressAssignment(ctx)
 	require.NoError(t, err)
-	require.Equal(t, []netip.Prefix{pref1, pref2}, routes)
+	require.Equal(t, []AssignedAddress{{IPPrefix: pref1}, {IPPrefix: pref2}}, assigned)
 
 	// addresses are replaced once a new capsule is received
 	require.NoError(t, client.AssignAddresses([]netip.Prefix{}))
-	routes, err = server.LocalPrefixes(ctx)
+	assigned, err = server.ReceiveAddressAssignment(ctx)
 	require.NoError(t, err)
-	require.Empty(t, routes)
+	require.Empty(t, assigned)
 }
 
 func TestRouteAdvertisement(t *testing.T) {
@@ -239,12 +239,12 @@ func TestClosing(t *testing.T) {
 		routeErrChan <- err
 	}()
 	go func() {
-		_, err := server.LocalPrefixes(context.Background())
+		_, err := server.ReceiveAddressAssignment(context.Background())
 		prefixErrChan <- err
 	}()
 
 	require.NoError(t, client.Close())
-	_, err := client.LocalPrefixes(context.Background())
+	_, err := client.ReceiveAddressAssignment(context.Background())
 	require.ErrorIs(t, err, net.ErrClosed)
 	var closeErr *CloseError
 	require.ErrorAs(t, err, &closeErr)

@@ -68,7 +68,7 @@ func (m *mockStream) ReceiveDatagram(ctx context.Context) ([]byte, error) {
 	return nil, ctx.Err()
 }
 
-func TestCapsuleQueueLimit(t *testing.T) {
+func TestCapsuleWriteQueueLimit(t *testing.T) {
 	writes := make(chan []byte)
 	writeStarted := make(chan struct{})
 	conn := newProxiedConn(&mockStream{
@@ -95,6 +95,30 @@ func TestCapsuleQueueLimit(t *testing.T) {
 	}()
 	require.ErrorContains(t, conn.AssignAddresses(nil), "capsule queue full")
 	require.ErrorIs(t, conn.AssignAddresses(nil), net.ErrClosed)
+}
+
+func TestCapsuleReceiveQueueLimit(t *testing.T) {
+	for _, name := range []string{"assignments", "requests"} {
+		t.Run(name, func(t *testing.T) {
+			var data []byte
+			for i := range maxQueuedCapsules + 1 {
+				if name == "assignments" {
+					data = (&addressAssignCapsule{}).append(data)
+				} else {
+					data = (&addressRequestCapsule{
+						RequestIDs: []AddressRequestID{AddressRequestID(i + 1)},
+						Prefixes:   []netip.Prefix{netip.MustParsePrefix("192.0.2.1/32")},
+					}).append(data)
+				}
+			}
+			conn := newProxiedConn(&mockStream{reading: data}, nil)
+			t.Cleanup(func() { conn.Close() })
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			_, err := conn.Routes(ctx)
+			require.ErrorIs(t, err, net.ErrClosed)
+		})
+	}
 }
 
 func TestDNSConfiguration(t *testing.T) {
@@ -392,7 +416,7 @@ func TestIncomingDatagrams(t *testing.T) {
 
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
-		_, err = conn.LocalPrefixes(ctx)
+		_, err = conn.ReceiveAddressAssignment(ctx)
 		require.NoError(t, err)
 		// after processing the address assignment, this is a valid packet
 		require.NoError(t, conn.handleIncomingProxiedPacket(data))
@@ -413,9 +437,9 @@ func TestSkipUnknownCapsule(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	prefixes, err := conn.LocalPrefixes(ctx)
+	assigned, err := conn.ReceiveAddressAssignment(ctx)
 	require.NoError(t, err)
-	require.Equal(t, []netip.Prefix{netip.MustParsePrefix("192.168.0.10/32")}, prefixes)
+	require.Equal(t, []AssignedAddress{{IPPrefix: netip.MustParsePrefix("192.168.0.10/32")}}, assigned)
 }
 
 func FuzzIncomingDatagram(f *testing.F) {

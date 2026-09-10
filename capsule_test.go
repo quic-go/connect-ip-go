@@ -102,6 +102,16 @@ func TestParseAddressAssignCapsuleLimit(t *testing.T) {
 	testCapsuleEntryLimit(t, capsuleTypeAddressAssign, maxAddressesPerCapsule, entry, parseAddressAssignCapsule)
 }
 
+func TestAssignedAddressRejected(t *testing.T) {
+	for _, prefix := range []string{"0.0.0.0/32", "::/128"} {
+		require.True(t, (AssignedAddress{RequestID: 1, IPPrefix: netip.MustParsePrefix(prefix)}).Rejected())
+	}
+	for _, prefix := range []string{"0.0.0.0/0", "0.0.0.0/31", "::/0", "::/127", "192.0.2.1/32", "2001:db8::1/128"} {
+		require.False(t, (AssignedAddress{RequestID: 1, IPPrefix: netip.MustParsePrefix(prefix)}).Rejected())
+	}
+	require.False(t, (AssignedAddress{}).Rejected())
+}
+
 func TestWriteAddressAssignCapsule(t *testing.T) {
 	c := &addressAssignCapsule{
 		AssignedAddresses: []AssignedAddress{
@@ -164,10 +174,8 @@ func testParseAddressCapsuleInvalid(t *testing.T, typ http3.CapsuleType, f func(
 			}).append(nil)
 		case capsuleTypeAddressRequest:
 			data = (&addressRequestCapsule{
-				RequestedAddresses: []RequestedAddress{
-					{RequestID: 1337, IPPrefix: netip.MustParsePrefix("1.2.3.4/32")},
-					{RequestID: 1338, IPPrefix: netip.MustParsePrefix("2001:db8::1/128")},
-				},
+				RequestIDs: []AddressRequestID{1337, 1338},
+				Prefixes:   []netip.Prefix{netip.MustParsePrefix("1.2.3.4/32"), netip.MustParsePrefix("2001:db8::1/128")},
 			}).append(nil)
 		default:
 			t.Fatalf("unexpected capsule type: %d", typ)
@@ -197,13 +205,8 @@ func TestParseAddressRequestCapsule(t *testing.T) {
 	require.Equal(t, capsuleTypeAddressRequest, typ)
 	capsule, err := parseAddressRequestCapsule(cr)
 	require.NoError(t, err)
-	require.Equal(t,
-		[]RequestedAddress{
-			{RequestID: 1337, IPPrefix: netip.MustParsePrefix("1.2.3.0/24")},
-			{RequestID: 1338, IPPrefix: netip.MustParsePrefix("2001:db8::1/128")},
-		},
-		capsule.RequestedAddresses,
-	)
+	require.Equal(t, []AddressRequestID{1337, 1338}, capsule.RequestIDs)
+	require.Equal(t, []netip.Prefix{netip.MustParsePrefix("1.2.3.0/24"), netip.MustParsePrefix("2001:db8::1/128")}, capsule.Prefixes)
 	require.Zero(t, r.Len())
 }
 
@@ -214,10 +217,8 @@ func TestParseAddressRequestCapsuleLimit(t *testing.T) {
 
 func TestWriteAddressRequestCapsule(t *testing.T) {
 	c := &addressRequestCapsule{
-		RequestedAddresses: []RequestedAddress{
-			{RequestID: 1337, IPPrefix: netip.MustParsePrefix("1.2.3.0/24")},
-			{RequestID: 1338, IPPrefix: netip.MustParsePrefix("2001:db8::1/128")},
-		},
+		RequestIDs: []AddressRequestID{1337, 1338},
+		Prefixes:   []netip.Prefix{netip.MustParsePrefix("1.2.3.0/24"), netip.MustParsePrefix("2001:db8::1/128")},
 	}
 	data := c.append(nil)
 	r := bytes.NewReader(data)
@@ -231,6 +232,14 @@ func TestWriteAddressRequestCapsule(t *testing.T) {
 }
 
 func TestParseAddressRequestCapsuleInvalid(t *testing.T) {
+	t.Run("empty", func(t *testing.T) {
+		_, err := parseAddressRequestCapsule(newCapsuleReader(t, capsuleTypeAddressRequest, nil))
+		require.ErrorContains(t, err, "contains no addresses")
+	})
+	t.Run("zero request ID", func(t *testing.T) {
+		_, err := parseAddressRequestCapsule(newCapsuleReader(t, capsuleTypeAddressRequest, []byte{0, 4, 192, 0, 2, 1, 32}))
+		require.ErrorContains(t, err, "zero request ID")
+	})
 	testParseAddressCapsuleInvalid(t, capsuleTypeAddressRequest, func(r http3.CapsuleReader) error {
 		_, err := parseAddressRequestCapsule(r)
 		return err
