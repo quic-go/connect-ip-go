@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"net"
+	"net/http"
 	"testing"
 	"time"
 
@@ -76,4 +77,56 @@ func TestClientDatagramCheck(t *testing.T) {
 	require.NoError(t, err)
 	_, _, err = clientConn.Dial(req)
 	require.ErrorContains(t, err, "connect-ip: server didn't enable datagrams")
+}
+
+func TestNewClientConnSharesHTTP3Connection(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	ln, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	require.NoError(t, err)
+	defer ln.Close()
+	url := "https://" + ln.LocalAddr().String()
+	template := uritemplate.MustNew(url + "/connect-ip")
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/connect-ip", func(w http.ResponseWriter, r *http.Request) {
+		req, err := ParseProxyRequest(r, template)
+		require.NoError(t, err)
+		_, err = (&Proxy{}).Proxy(w, req)
+		require.NoError(t, err)
+	})
+	mux.HandleFunc("GET /hello", func(http.ResponseWriter, *http.Request) {})
+	s := http3.Server{Handler: mux, TLSConfig: tlsConf, EnableDatagrams: true}
+	go func() { s.Serve(ln) }()
+	defer s.Close()
+
+	qconn, err := quic.DialAddr(
+		ctx,
+		ln.LocalAddr().String(),
+		&tls.Config{ServerName: "localhost", RootCAs: certPool, NextProtos: []string{http3.NextProtoH3}},
+		&quic.Config{EnableDatagrams: true},
+	)
+	require.NoError(t, err)
+	defer qconn.CloseWithError(0, "")
+
+	h3conn := (&http3.Transport{EnableDatagrams: true}).NewClientConn(qconn)
+	httpClient := &http.Client{Transport: h3conn, Timeout: time.Second}
+	checkHTTP := func() {
+		t.Helper()
+		rsp, err := httpClient.Get(url + "/hello")
+		require.NoError(t, err)
+		rsp.Body.Close()
+		require.Equal(t, http.StatusOK, rsp.StatusCode)
+	}
+
+	checkHTTP()
+	req, err := NewRequest(ctx, template)
+	require.NoError(t, err)
+	tunnel, rsp, err := NewClientConn(h3conn).Dial(req)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, rsp.StatusCode)
+	checkHTTP()
+	require.NoError(t, tunnel.Close())
+	checkHTTP()
 }

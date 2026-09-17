@@ -16,6 +16,14 @@ type ClientConn struct {
 	clientConn *http3.ClientConn
 }
 
+// NewClientConn creates a client connection using an existing HTTP/3 connection.
+// The HTTP/3 connection and its underlying QUIC connection must have datagrams enabled.
+// The caller owns the HTTP/3 connection and can also use it for ordinary HTTP requests.
+// Closing a [Conn] returned by [ClientConn.Dial] does not close the HTTP/3 connection.
+func NewClientConn(conn *http3.ClientConn) *ClientConn {
+	return &ClientConn{clientConn: conn}
+}
+
 // Dial dials a proxied connection over the proxy connection.
 func (c *ClientConn) Dial(req *Request) (*Conn, *http.Response, error) {
 	return c.dial(req, nil)

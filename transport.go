@@ -31,7 +31,7 @@ type Transport struct {
 
 // Dial opens a QUIC connection to the proxy and then dials a proxied connection.
 // Closing the returned Conn also closes the QUIC connection to the proxy.
-// To establish multiple proxied connections over one proxy connection, use NewClientConn.
+// To establish multiple proxied connections over one proxy connection, use [Transport.NewClientConn].
 func (t *Transport) Dial(req *Request) (*Conn, *http.Response, error) {
 	httpReq := req.httpRequest()
 	if httpReq.URL == nil || httpReq.URL.Host == "" {
@@ -77,11 +77,12 @@ func (t *Transport) Dial(req *Request) (*Conn, *http.Response, error) {
 // NewClientConn creates a client connection for an already established QUIC connection.
 // It returns an error if the QUIC connection didn't negotiate datagram support.
 // The caller owns the QUIC connection and closes it when done.
+// To reuse an existing HTTP/3 connection, use [NewClientConn].
 func (t *Transport) NewClientConn(conn *quic.Conn) (*ClientConn, error) {
 	datagrams := conn.ConnectionState().SupportsDatagrams
 	if !datagrams.Local || !datagrams.Remote {
 		return nil, errors.New("connect-ip: QUIC connection needs datagram support")
 	}
 	tr := &http3.Transport{EnableDatagrams: true}
-	return &ClientConn{clientConn: tr.NewClientConn(conn)}, nil
+	return NewClientConn(tr.NewClientConn(conn)), nil
 }
