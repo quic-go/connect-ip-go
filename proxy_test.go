@@ -120,6 +120,19 @@ func TestRouteAdvertisement(t *testing.T) {
 		}),
 		"invalid route advertising start_ip: 1.1.1.2 larger than 1.1.1.1",
 	)
+	ip4 := netip.MustParseAddr("192.0.2.1")
+	ip6 := netip.MustParseAddr("2001:db8::1")
+	for _, route := range []IPRoute{
+		{},
+		{EndIP: ip4},
+		{StartIP: ip4},
+		{StartIP: ip4, EndIP: ip6},
+		{StartIP: ip6, EndIP: ip4},
+		{StartIP: ip6.WithZone("eth0"), EndIP: ip6.Next()},
+		{StartIP: ip6, EndIP: ip6.WithZone("eth0")},
+	} {
+		require.Error(t, client.AdvertiseRoute([]IPRoute{route}), "route: %+v", route)
+	}
 
 	// advertise some routes and make sure they're received
 	require.NoError(t, client.AdvertiseRoute([]IPRoute{
