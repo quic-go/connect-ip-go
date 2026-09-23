@@ -260,6 +260,13 @@ func (c *Conn) AssignAddresses(prefixes []netip.Prefix) error {
 }
 
 func (c *Conn) sendAddressAssignment(capsule *addressAssignCapsule) error {
+	for i, addr := range capsule.AssignedAddresses {
+		p := addr.IPPrefix
+		if !p.IsValid() || p != p.Masked() {
+			return fmt.Errorf("connect-ip: invalid assigned prefix %d: %s", i, p)
+		}
+	}
+
 	c.mu.Lock()
 	if c.closeErr != nil {
 		err := c.closeErr

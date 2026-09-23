@@ -80,6 +80,15 @@ func TestAddressAssignment(t *testing.T) {
 	defer cancel()
 	pref1 := netip.MustParsePrefix("1.1.1.0/24")
 	pref2 := netip.MustParsePrefix("2001:db8::/64")
+	for _, p := range []netip.Prefix{
+		{},
+		netip.PrefixFrom(netip.MustParseAddr("192.0.2.1"), 33),
+		netip.PrefixFrom(netip.MustParseAddr("2001:db8::1"), 129),
+		netip.MustParsePrefix("192.0.2.1/24"),
+		netip.MustParsePrefix("2001:db8::1/64"),
+	} {
+		require.ErrorContains(t, client.AssignAddresses([]netip.Prefix{pref1, p}), "invalid assigned prefix 1")
+	}
 	require.NoError(t, client.AssignAddresses([]netip.Prefix{pref1, pref2}))
 	assigned, err := server.ReceiveAddressAssignment(ctx)
 	require.NoError(t, err)
