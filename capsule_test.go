@@ -369,6 +369,12 @@ func TestRouteAdvertisementValidation(t *testing.T) {
 			},
 		},
 		{
+			name: "IPv6 TCP only",
+			routes: []IPRoute{
+				{StartIP: netip.MustParseAddr("2001:db8::10"), EndIP: netip.MustParseAddr("2001:db8::20"), IPProtocol: 6},
+			},
+		},
+		{
 			name: "adjacent TCP ranges",
 			routes: []IPRoute{
 				{StartIP: netip.MustParseAddr("192.0.2.1"), EndIP: netip.MustParseAddr("192.0.2.2"), IPProtocol: 6},
@@ -398,6 +404,15 @@ func TestRouteAdvertisementValidation(t *testing.T) {
 				{StartIP: netip.MustParseAddr("192.0.2.21"), EndIP: netip.MustParseAddr("192.0.2.29"), IPProtocol: 6},
 				{StartIP: netip.MustParseAddr("192.0.2.41"), EndIP: netip.MustParseAddr("192.0.2.50"), IPProtocol: 6},
 				{StartIP: netip.MustParseAddr("192.0.2.1"), EndIP: netip.MustParseAddr("192.0.2.9"), IPProtocol: 17},
+			},
+		},
+		{
+			name: "disjoint ranges for all protocols and TCP in both families",
+			routes: []IPRoute{
+				{StartIP: netip.MustParseAddr("192.0.2.10"), EndIP: netip.MustParseAddr("192.0.2.20"), IPProtocol: 0},
+				{StartIP: netip.MustParseAddr("192.0.2.21"), EndIP: netip.MustParseAddr("192.0.2.30"), IPProtocol: 6},
+				{StartIP: netip.MustParseAddr("2001:db8::10"), EndIP: netip.MustParseAddr("2001:db8::20"), IPProtocol: 0},
+				{StartIP: netip.MustParseAddr("2001:db8::21"), EndIP: netip.MustParseAddr("2001:db8::30"), IPProtocol: 6},
 			},
 		},
 		{
@@ -522,9 +537,10 @@ func TestRouteAdvertisementValidation(t *testing.T) {
 			wantErr: "route overlaps a route for all IP protocols",
 		},
 		{
-			name: "IPv6 overlap after IPv4 routes",
+			name: "IPv6 overlap after disjoint IPv4 routes",
 			routes: []IPRoute{
 				{StartIP: netip.MustParseAddr("192.0.2.10"), EndIP: netip.MustParseAddr("192.0.2.20"), IPProtocol: 0},
+				{StartIP: netip.MustParseAddr("192.0.2.41"), EndIP: netip.MustParseAddr("192.0.2.50"), IPProtocol: 6},
 				{StartIP: netip.MustParseAddr("2001:db8::10"), EndIP: netip.MustParseAddr("2001:db8::20"), IPProtocol: 0},
 				{StartIP: netip.MustParseAddr("2001:db8::10"), EndIP: netip.MustParseAddr("2001:db8::20"), IPProtocol: 6},
 			},

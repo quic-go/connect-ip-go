@@ -204,7 +204,7 @@ func (r IPRoute) Prefixes() []netip.Prefix { return rangeToPrefixes(r.StartIP, r
 // validateRouteAdvertisement checks the endpoints, ordering, and overlap rules in RFC 9484, Section 4.7.3.
 // https://www.rfc-editor.org/rfc/rfc9484.html#section-4.7.3
 func validateRouteAdvertisement(routes []IPRoute) error {
-	var numIPv4 int
+	var numIPv4, numIPv4Protocol0, numIPv6Protocol0 int
 	for _, route := range routes {
 		if !route.StartIP.IsValid() || !route.EndIP.IsValid() {
 			return errors.New("invalid route: IP addresses must be valid")
@@ -220,6 +220,11 @@ func validateRouteAdvertisement(routes []IPRoute) error {
 		}
 		if route.StartIP.Is4() {
 			numIPv4++
+			if route.IPProtocol == 0 {
+				numIPv4Protocol0++
+			}
+		} else if route.IPProtocol == 0 {
+			numIPv6Protocol0++
 		}
 	}
 
@@ -247,20 +252,37 @@ func validateRouteAdvertisement(routes []IPRoute) error {
 	// Rule 3 only compares routes with equal IPProtocol values.
 	// For example, advertising 192.0.2.0-192.0.2.255 with both IPProtocol 0 and 6 passes that check.
 	// The RFC forbids this overlap too: IPProtocol == 0 allows all protocols, including 6.
-	// Check IPv4 and IPv6 separately (using the fact thatrule 1 keeps each group contiguous).
-	for _, familyRoutes := range [][]IPRoute{routes[:numIPv4], routes[numIPv4:]} {
-		for i, a := range familyRoutes {
-			if a.IPProtocol != 0 {
+	// Rule 1 groups routes by address family; rule 2 puts protocol 0 first in each family.
+	ipv4 := routes[:numIPv4]
+	if err := validateNonOverlappingRoutes(ipv4[:numIPv4Protocol0], ipv4[numIPv4Protocol0:]); err != nil {
+		return err
+	}
+	ipv6 := routes[numIPv4:]
+	return validateNonOverlappingRoutes(ipv6[:numIPv6Protocol0], ipv6[numIPv6Protocol0:])
+}
+
+// validateNonOverlappingRoutes checks routes allowing all protocols against routes
+// allowing a specific protocol. Both slices must belong to the same address family
+// and already be sorted by protocol and address.
+func validateNonOverlappingRoutes(all, specific []IPRoute) error {
+	var j int // cursor into all
+	for i, b := range specific {
+		if i > 0 && specific[i-1].IPProtocol != b.IPProtocol {
+			j = 0 // address ordering restarts for each protocol
+		}
+		for j < len(all) {
+			a := all[j]
+			if a.EndIP.Compare(b.StartIP) < 0 {
+				// a ends before b. Skip a for the rest of this protocol
+				j++
 				continue
 			}
-			for _, b := range familyRoutes[i+1:] {
-				if b.IPProtocol == 0 {
-					continue
-				}
-				if a.StartIP.Compare(b.EndIP) <= 0 && b.StartIP.Compare(a.EndIP) <= 0 {
-					return errors.New("route overlaps a route for all IP protocols")
-				}
+			if b.EndIP.Compare(a.StartIP) < 0 {
+				// b ends before a and every later route allowing all protocols
+				break
 			}
+			// neither range ends before the other starts: they overlap
+			return errors.New("route overlaps a route for all IP protocols")
 		}
 	}
 	return nil
