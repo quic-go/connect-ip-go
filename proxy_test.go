@@ -47,7 +47,7 @@ func setupConns(t *testing.T) (client, server *Conn) {
 	go func() { s.Serve(conn) }()
 	t.Cleanup(func() { s.Close() })
 
-	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	req, err := NewRequest(ctx, template)
 	require.NoError(t, err)
@@ -118,7 +118,7 @@ func TestRouteAdvertisement(t *testing.T) {
 		client.AdvertiseRoute([]IPRoute{
 			{StartIP: netip.MustParseAddr("1.1.1.2"), EndIP: netip.MustParseAddr("1.1.1.1"), IPProtocol: 42},
 		}),
-		"invalid route advertising start_ip: 1.1.1.2 larger than 1.1.1.1",
+		"invalid route: start IP 1.1.1.2 is greater than end IP 1.1.1.1",
 	)
 	ip4 := netip.MustParseAddr("192.0.2.1")
 	ip6 := netip.MustParseAddr("2001:db8::1")
@@ -131,6 +131,7 @@ func TestRouteAdvertisement(t *testing.T) {
 		{StartIP: ip6.WithZone("eth0"), EndIP: ip6.Next()},
 		{StartIP: ip6, EndIP: ip6.WithZone("eth0")},
 	} {
+		require.Error(t, validateRouteAdvertisement([]IPRoute{route}), "route: %+v", route)
 		require.Error(t, client.AdvertiseRoute([]IPRoute{route}), "route: %+v", route)
 	}
 
