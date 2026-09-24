@@ -22,12 +22,15 @@ func composeICMPTooLargePacket(b []byte, mtu int) ([]byte, error) {
 		if len(b) < ipv4.HeaderLen {
 			return nil, errors.New("connect-ip: IPv4 packet too short")
 		}
+		// RFC 1812, section 4.3.2.3 recommends quoting as much of the original
+		// packet as possible without exceeding 576 bytes, including the IPv4 and ICMP headers.
+		const maxDataLen = 576 - ipv4.HeaderLen - 8
 		icmpMessage = &icmp.Message{
 			Type: ipv4.ICMPTypeDestinationUnreachable,
 			Code: 4, // Fragmentation Needed and Don't Fragment was Set
 			Body: &icmp.PacketTooBig{
 				MTU:  mtu,
-				Data: b[:min(len(b), ipv4.HeaderLen+8)],
+				Data: b[:min(len(b), maxDataLen)],
 			},
 		}
 	case 6:

@@ -1,6 +1,7 @@
 package connectip
 
 import (
+	"encoding/binary"
 	"net"
 	"net/netip"
 	"testing"
@@ -15,34 +16,54 @@ import (
 func TestICMPTooLargeIPv4(t *testing.T) {
 	src := netip.MustParseAddr("192.168.1.1")
 	dst := netip.MustParseAddr("8.8.8.8")
-	origHdr := &ipv4.Header{
-		Version:  4,
-		Len:      ipv4.HeaderLen,
-		TotalLen: 60,
-		TTL:      64,
-		Protocol: 6, // TCP
-		Src:      src.AsSlice(),
-		Dst:      dst.AsSlice(),
-	}
-	origBytes, err := origHdr.Marshal()
-	require.NoError(t, err)
-	data, err := composeICMPTooLargePacket(origBytes, 1200)
-	require.NoError(t, err)
 
-	// parse the resulting IPv4 header
-	hdr, err := ipv4.ParseHeader(data)
-	require.NoError(t, err)
-	require.Equal(t, 4, hdr.Version)
-	require.Equal(t, ipProtoICMP, hdr.Protocol)
-	require.Equal(t, dst.String(), hdr.Src.String())
-	require.Equal(t, src.String(), hdr.Dst.String())
-	require.Equal(t, uint16(hdr.Checksum), calculateIPv4Checksum(([20]byte)(data)))
-	// parse ICMP message
-	icmpMsg, err := icmp.ParseMessage(ipProtoICMP, data[ipv4.HeaderLen:])
-	require.NoError(t, err)
-	require.Equal(t, ipv4.ICMPTypeDestinationUnreachable, icmpMsg.Type)
-	require.Equal(t, 4, icmpMsg.Code)
-	// TODO: validate content
+	for _, tt := range []struct {
+		name      string
+		packetLen int
+		quoteLen  int
+	}{
+		{name: "small packet", packetLen: 60, quoteLen: 60},
+		{name: "large packet", packetLen: 1500, quoteLen: 548},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			origHdr := &ipv4.Header{
+				Version:  4,
+				Len:      ipv4.HeaderLen,
+				TotalLen: tt.packetLen,
+				TTL:      64,
+				Protocol: 6, // TCP
+				Src:      src.AsSlice(),
+				Dst:      dst.AsSlice(),
+			}
+			origBytes, err := origHdr.Marshal()
+			require.NoError(t, err)
+			// Ensure the length is in network byte order; Marshal uses native byte order on macOS.
+			binary.BigEndian.PutUint16(origBytes[2:4], uint16(origHdr.TotalLen))
+			for i := range origHdr.TotalLen - len(origBytes) {
+				origBytes = append(origBytes, byte(i))
+			}
+			data, err := composeICMPTooLargePacket(origBytes, 1200)
+			require.NoError(t, err)
+			require.Len(t, data, ipv4.HeaderLen+8+tt.quoteLen)
+
+			// parse the resulting IPv4 header
+			hdr, err := ipv4.ParseHeader(data)
+			require.NoError(t, err)
+			require.Equal(t, 4, hdr.Version)
+			require.Equal(t, ipProtoICMP, hdr.Protocol)
+			require.Equal(t, dst.String(), hdr.Src.String())
+			require.Equal(t, src.String(), hdr.Dst.String())
+			require.Equal(t, uint16(hdr.Checksum), calculateIPv4Checksum(([20]byte)(data)))
+			// parse ICMP message
+			icmpMsg, err := icmp.ParseMessage(ipProtoICMP, data[ipv4.HeaderLen:])
+			require.NoError(t, err)
+			require.Equal(t, ipv4.ICMPTypeDestinationUnreachable, icmpMsg.Type)
+			require.Equal(t, 4, icmpMsg.Code)
+			icmpBody, ok := icmpMsg.Body.(*icmp.DstUnreach)
+			require.True(t, ok)
+			require.Equal(t, origBytes[:tt.quoteLen], icmpBody.Data)
+		})
+	}
 }
 
 func TestICMPTooLargeIPv6(t *testing.T) {
