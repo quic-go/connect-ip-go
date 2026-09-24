@@ -143,19 +143,8 @@ func newProxiedConn(str http3Stream, closeConn func() error) *Conn {
 // AdvertiseRoute schedules an advertisement of the available routes to the peer.
 // It returns once the advertisement has been queued.
 func (c *Conn) AdvertiseRoute(routes []IPRoute) error {
-	for _, route := range routes {
-		if !route.StartIP.IsValid() || !route.EndIP.IsValid() {
-			return errors.New("invalid route: IP addresses must be valid")
-		}
-		if route.StartIP.Is4() != route.EndIP.Is4() {
-			return errors.New("invalid route: IP addresses must have the same address family")
-		}
-		if route.StartIP.Zone() != "" || route.EndIP.Zone() != "" {
-			return errors.New("invalid route: IP addresses must not have zones")
-		}
-		if route.StartIP.Compare(route.EndIP) == 1 {
-			return fmt.Errorf("invalid route advertising start_ip: %s larger than %s", route.StartIP, route.EndIP)
-		}
+	if err := validateRouteAdvertisement(routes); err != nil {
+		return err
 	}
 
 	c.mu.Lock()

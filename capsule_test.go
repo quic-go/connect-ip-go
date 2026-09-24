@@ -2,10 +2,13 @@ package connectip
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"io"
+	"net"
 	"net/netip"
 	"testing"
+	"time"
 
 	"github.com/quic-go/quic-go/http3"
 	"github.com/quic-go/quic-go/quicvarint"
@@ -48,9 +51,8 @@ func testIncompleteCapsule(t *testing.T, data []byte, parse func(http3.CapsuleRe
 	}
 }
 
-func testCapsuleEntryLimit[T any](t *testing.T, typ http3.CapsuleType, limit int, entry []byte, parse func(http3.CapsuleReader) (*T, error)) {
+func testCapsuleEntryLimit[T any](t *testing.T, typ http3.CapsuleType, payload []byte, parse func(http3.CapsuleReader) (*T, error)) {
 	t.Helper()
-	payload := bytes.Repeat(entry, limit)
 	r := newCapsuleReader(t, typ, payload)
 	_, err := parse(r)
 	require.NoError(t, err)
@@ -99,7 +101,7 @@ func TestParseAddressAssignCapsule(t *testing.T) {
 
 func TestParseAddressAssignCapsuleLimit(t *testing.T) {
 	entry := []byte{1, 4, 192, 0, 2, 1, 32} // Request ID 1, 192.0.2.1/32.
-	testCapsuleEntryLimit(t, capsuleTypeAddressAssign, maxAddressesPerCapsule, entry, parseAddressAssignCapsule)
+	testCapsuleEntryLimit(t, capsuleTypeAddressAssign, bytes.Repeat(entry, maxAddressesPerCapsule), parseAddressAssignCapsule)
 }
 
 func TestAssignedAddressRejected(t *testing.T) {
@@ -212,7 +214,7 @@ func TestParseAddressRequestCapsule(t *testing.T) {
 
 func TestParseAddressRequestCapsuleLimit(t *testing.T) {
 	entry := []byte{1, 4, 192, 0, 2, 1, 32} // Request ID 1, 192.0.2.1/32.
-	testCapsuleEntryLimit(t, capsuleTypeAddressRequest, maxAddressesPerCapsule, entry, parseAddressRequestCapsule)
+	testCapsuleEntryLimit(t, capsuleTypeAddressRequest, bytes.Repeat(entry, maxAddressesPerCapsule), parseAddressRequestCapsule)
 }
 
 func TestWriteAddressRequestCapsule(t *testing.T) {
@@ -286,8 +288,16 @@ func TestParseRouteAdvertisementCapsule(t *testing.T) {
 }
 
 func TestParseRouteAdvertisementCapsuleLimit(t *testing.T) {
-	entry := []byte{4, 192, 0, 2, 1, 192, 0, 2, 1, 0} // 192.0.2.1, all protocols.
-	testCapsuleEntryLimit(t, capsuleTypeRouteAdvertisement, maxRoutesPerCapsule, entry, parseRouteAdvertisementCapsule)
+	var payload []byte
+	ip := netip.MustParseAddr("192.0.0.0")
+	for range maxRoutesPerCapsule {
+		payload = append(payload, 4)
+		payload = append(payload, ip.AsSlice()...)
+		payload = append(payload, ip.AsSlice()...)
+		payload = append(payload, 0)
+		ip = ip.Next()
+	}
+	testCapsuleEntryLimit(t, capsuleTypeRouteAdvertisement, payload, parseRouteAdvertisementCapsule)
 }
 
 func TestWriteRouteAdvertisementCapsule(t *testing.T) {
@@ -324,7 +334,7 @@ func TestParseRouteAdvertisementCapsuleInvalid(t *testing.T) {
 		iprange1 = append(iprange1, netip.AddrFrom4([4]byte{1, 1, 1, 1}).AsSlice()...) // End IP
 		iprange1 = append(iprange1, 13)                                                // IP Protocol
 		_, err := parseRouteAdvertisementCapsule(newCapsuleReader(t, capsuleTypeRouteAdvertisement, iprange1))
-		require.ErrorContains(t, err, "start IP is greater than end IP")
+		require.ErrorContains(t, err, "start IP 1.2.3.4 is greater than end IP 1.1.1.1")
 	})
 
 	t.Run("incomplete capsule", func(t *testing.T) {
@@ -340,6 +350,236 @@ func TestParseRouteAdvertisementCapsuleInvalid(t *testing.T) {
 			return err
 		})
 	})
+}
+
+func TestRouteAdvertisementValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		routes  []IPRoute
+		wantErr string
+	}{
+		{
+			name:   "empty list",
+			routes: []IPRoute{},
+		},
+		{
+			name: "IPv6 only",
+			routes: []IPRoute{
+				{StartIP: netip.MustParseAddr("2001:db8::10"), EndIP: netip.MustParseAddr("2001:db8::20"), IPProtocol: 0},
+			},
+		},
+		{
+			name: "IPv6 TCP only",
+			routes: []IPRoute{
+				{StartIP: netip.MustParseAddr("2001:db8::10"), EndIP: netip.MustParseAddr("2001:db8::20"), IPProtocol: 6},
+			},
+		},
+		{
+			name: "adjacent TCP ranges",
+			routes: []IPRoute{
+				{StartIP: netip.MustParseAddr("192.0.2.1"), EndIP: netip.MustParseAddr("192.0.2.2"), IPProtocol: 6},
+				{StartIP: netip.MustParseAddr("192.0.2.3"), EndIP: netip.MustParseAddr("192.0.2.4"), IPProtocol: 6},
+			},
+		},
+		{
+			name: "TCP and UDP ranges may overlap",
+			routes: []IPRoute{
+				{StartIP: netip.MustParseAddr("192.0.2.10"), EndIP: netip.MustParseAddr("192.0.2.30"), IPProtocol: 6},
+				{StartIP: netip.MustParseAddr("192.0.2.1"), EndIP: netip.MustParseAddr("192.0.2.20"), IPProtocol: 17},
+			},
+		},
+		{
+			name: "protocol ordering restarts for IPv6",
+			routes: []IPRoute{
+				{StartIP: netip.MustParseAddr("192.0.2.1"), EndIP: netip.MustParseAddr("192.0.2.2"), IPProtocol: 17},
+				{StartIP: netip.MustParseAddr("2001:db8::10"), EndIP: netip.MustParseAddr("2001:db8::20"), IPProtocol: 0},
+			},
+		},
+		{
+			name: "TCP and UDP ranges fit before, between, or after ranges for all protocols",
+			routes: []IPRoute{
+				{StartIP: netip.MustParseAddr("192.0.2.10"), EndIP: netip.MustParseAddr("192.0.2.20"), IPProtocol: 0},
+				{StartIP: netip.MustParseAddr("192.0.2.30"), EndIP: netip.MustParseAddr("192.0.2.40"), IPProtocol: 0},
+				{StartIP: netip.MustParseAddr("192.0.2.1"), EndIP: netip.MustParseAddr("192.0.2.9"), IPProtocol: 6},
+				{StartIP: netip.MustParseAddr("192.0.2.21"), EndIP: netip.MustParseAddr("192.0.2.29"), IPProtocol: 6},
+				{StartIP: netip.MustParseAddr("192.0.2.41"), EndIP: netip.MustParseAddr("192.0.2.50"), IPProtocol: 6},
+				{StartIP: netip.MustParseAddr("192.0.2.1"), EndIP: netip.MustParseAddr("192.0.2.9"), IPProtocol: 17},
+			},
+		},
+		{
+			name: "disjoint ranges for all protocols and TCP in both families",
+			routes: []IPRoute{
+				{StartIP: netip.MustParseAddr("192.0.2.10"), EndIP: netip.MustParseAddr("192.0.2.20"), IPProtocol: 0},
+				{StartIP: netip.MustParseAddr("192.0.2.21"), EndIP: netip.MustParseAddr("192.0.2.30"), IPProtocol: 6},
+				{StartIP: netip.MustParseAddr("2001:db8::10"), EndIP: netip.MustParseAddr("2001:db8::20"), IPProtocol: 0},
+				{StartIP: netip.MustParseAddr("2001:db8::21"), EndIP: netip.MustParseAddr("2001:db8::30"), IPProtocol: 6},
+			},
+		},
+		{
+			name: "reversed IPv4 endpoints",
+			routes: []IPRoute{
+				{StartIP: netip.MustParseAddr("192.0.2.2"), EndIP: netip.MustParseAddr("192.0.2.1"), IPProtocol: 6},
+			},
+			wantErr: "start IP 192.0.2.2 is greater than end IP 192.0.2.1",
+		},
+		{
+			name: "reversed IPv6 endpoints",
+			routes: []IPRoute{
+				{StartIP: netip.MustParseAddr("2001:db8::20"), EndIP: netip.MustParseAddr("2001:db8::10"), IPProtocol: 0},
+			},
+			wantErr: "start IP 2001:db8::20 is greater than end IP 2001:db8::10",
+		},
+		{
+			name: "IPv6 before IPv4",
+			routes: []IPRoute{
+				{StartIP: netip.MustParseAddr("2001:db8::10"), EndIP: netip.MustParseAddr("2001:db8::20"), IPProtocol: 0},
+				{StartIP: netip.MustParseAddr("192.0.2.1"), EndIP: netip.MustParseAddr("192.0.2.2"), IPProtocol: 0},
+			},
+			wantErr: "route IP versions must be in increasing order",
+		},
+		{
+			name: "UDP before TCP",
+			routes: []IPRoute{
+				{StartIP: netip.MustParseAddr("192.0.2.1"), EndIP: netip.MustParseAddr("192.0.2.2"), IPProtocol: 17},
+				{StartIP: netip.MustParseAddr("192.0.2.3"), EndIP: netip.MustParseAddr("192.0.2.4"), IPProtocol: 6},
+			},
+			wantErr: "route IP protocols must be in increasing order",
+		},
+		{
+			name: "TCP ranges in descending address order",
+			routes: []IPRoute{
+				{StartIP: netip.MustParseAddr("192.0.2.3"), EndIP: netip.MustParseAddr("192.0.2.4"), IPProtocol: 6},
+				{StartIP: netip.MustParseAddr("192.0.2.1"), EndIP: netip.MustParseAddr("192.0.2.2"), IPProtocol: 6},
+			},
+			wantErr: "route address ranges must be disjoint and in increasing order",
+		},
+		{
+			name: "duplicate routes for all protocols",
+			routes: []IPRoute{
+				{StartIP: netip.MustParseAddr("192.0.2.1"), EndIP: netip.MustParseAddr("192.0.2.2"), IPProtocol: 0},
+				{StartIP: netip.MustParseAddr("192.0.2.1"), EndIP: netip.MustParseAddr("192.0.2.2"), IPProtocol: 0},
+			},
+			wantErr: "route address ranges must be disjoint and in increasing order",
+		},
+		{
+			name: "TCP ranges share an endpoint",
+			routes: []IPRoute{
+				{StartIP: netip.MustParseAddr("192.0.2.1"), EndIP: netip.MustParseAddr("192.0.2.2"), IPProtocol: 6},
+				{StartIP: netip.MustParseAddr("192.0.2.2"), EndIP: netip.MustParseAddr("192.0.2.3"), IPProtocol: 6},
+			},
+			wantErr: "route address ranges must be disjoint and in increasing order",
+		},
+		{
+			name: "duplicate IPv6 routes",
+			routes: []IPRoute{
+				{StartIP: netip.MustParseAddr("2001:db8::10"), EndIP: netip.MustParseAddr("2001:db8::20"), IPProtocol: 6},
+				{StartIP: netip.MustParseAddr("2001:db8::10"), EndIP: netip.MustParseAddr("2001:db8::20"), IPProtocol: 6},
+			},
+			wantErr: "route address ranges must be disjoint and in increasing order",
+		},
+		{
+			name: "IPv6 range for all protocols overlaps TCP",
+			routes: []IPRoute{
+				{StartIP: netip.MustParseAddr("2001:db8::10"), EndIP: netip.MustParseAddr("2001:db8::20"), IPProtocol: 0},
+				{StartIP: netip.MustParseAddr("2001:db8::10"), EndIP: netip.MustParseAddr("2001:db8::20"), IPProtocol: 6},
+			},
+			wantErr: "route overlaps a route for all IP protocols",
+		},
+		{
+			name: "TCP overlaps the first range for all protocols",
+			routes: []IPRoute{
+				{StartIP: netip.MustParseAddr("192.0.2.10"), EndIP: netip.MustParseAddr("192.0.2.20"), IPProtocol: 0},
+				{StartIP: netip.MustParseAddr("192.0.2.30"), EndIP: netip.MustParseAddr("192.0.2.40"), IPProtocol: 0},
+				{StartIP: netip.MustParseAddr("192.0.2.15"), EndIP: netip.MustParseAddr("192.0.2.16"), IPProtocol: 6},
+			},
+			wantErr: "route overlaps a route for all IP protocols",
+		},
+		{
+			name: "TCP overlaps the second range for all protocols",
+			routes: []IPRoute{
+				{StartIP: netip.MustParseAddr("192.0.2.10"), EndIP: netip.MustParseAddr("192.0.2.20"), IPProtocol: 0},
+				{StartIP: netip.MustParseAddr("192.0.2.30"), EndIP: netip.MustParseAddr("192.0.2.40"), IPProtocol: 0},
+				{StartIP: netip.MustParseAddr("192.0.2.21"), EndIP: netip.MustParseAddr("192.0.2.35"), IPProtocol: 6},
+			},
+			wantErr: "route overlaps a route for all IP protocols",
+		},
+		{
+			name: "TCP range contains a range for all protocols",
+			routes: []IPRoute{
+				{StartIP: netip.MustParseAddr("192.0.2.10"), EndIP: netip.MustParseAddr("192.0.2.20"), IPProtocol: 0},
+				{StartIP: netip.MustParseAddr("192.0.2.1"), EndIP: netip.MustParseAddr("192.0.2.30"), IPProtocol: 6},
+			},
+			wantErr: "route overlaps a route for all IP protocols",
+		},
+		{
+			name: "TCP starts at the end of a range for all protocols",
+			routes: []IPRoute{
+				{StartIP: netip.MustParseAddr("192.0.2.10"), EndIP: netip.MustParseAddr("192.0.2.20"), IPProtocol: 0},
+				{StartIP: netip.MustParseAddr("192.0.2.20"), EndIP: netip.MustParseAddr("192.0.2.30"), IPProtocol: 6},
+			},
+			wantErr: "route overlaps a route for all IP protocols",
+		},
+		{
+			name: "TCP ends at the start of a range for all protocols",
+			routes: []IPRoute{
+				{StartIP: netip.MustParseAddr("192.0.2.10"), EndIP: netip.MustParseAddr("192.0.2.20"), IPProtocol: 0},
+				{StartIP: netip.MustParseAddr("192.0.2.1"), EndIP: netip.MustParseAddr("192.0.2.10"), IPProtocol: 6},
+			},
+			wantErr: "route overlaps a route for all IP protocols",
+		},
+		{
+			name: "UDP overlaps a range for all protocols after disjoint TCP ranges",
+			routes: []IPRoute{
+				{StartIP: netip.MustParseAddr("192.0.2.10"), EndIP: netip.MustParseAddr("192.0.2.20"), IPProtocol: 0},
+				{StartIP: netip.MustParseAddr("192.0.2.41"), EndIP: netip.MustParseAddr("192.0.2.50"), IPProtocol: 6},
+				{StartIP: netip.MustParseAddr("192.0.2.15"), EndIP: netip.MustParseAddr("192.0.2.16"), IPProtocol: 17},
+			},
+			wantErr: "route overlaps a route for all IP protocols",
+		},
+		{
+			name: "IPv6 overlap after disjoint IPv4 routes",
+			routes: []IPRoute{
+				{StartIP: netip.MustParseAddr("192.0.2.10"), EndIP: netip.MustParseAddr("192.0.2.20"), IPProtocol: 0},
+				{StartIP: netip.MustParseAddr("192.0.2.41"), EndIP: netip.MustParseAddr("192.0.2.50"), IPProtocol: 6},
+				{StartIP: netip.MustParseAddr("2001:db8::10"), EndIP: netip.MustParseAddr("2001:db8::20"), IPProtocol: 0},
+				{StartIP: netip.MustParseAddr("2001:db8::10"), EndIP: netip.MustParseAddr("2001:db8::20"), IPProtocol: 6},
+			},
+			wantErr: "route overlaps a route for all IP protocols",
+		},
+	}
+
+	sender := newProxiedConn(&mockStream{}, nil)
+	defer sender.Close()
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := sender.AdvertiseRoute(test.routes)
+			if test.wantErr != "" {
+				require.ErrorContains(t, err, test.wantErr)
+			} else {
+				require.NoError(t, err)
+			}
+
+			data := (&routeAdvertisementCapsule{IPAddressRanges: test.routes}).append(nil)
+			receiver := newProxiedConn(&mockStream{reading: data}, nil)
+			defer receiver.Close()
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			received, err := receiver.Routes(ctx)
+			if test.wantErr != "" {
+				require.ErrorIs(t, err, net.ErrClosed)
+				return
+			}
+			require.NoError(t, err)
+			if len(test.routes) == 0 {
+				require.Empty(t, received)
+			} else {
+				require.Equal(t, test.routes, received)
+			}
+			require.Zero(t, testing.AllocsPerRun(100, func() {
+				_ = validateRouteAdvertisement(test.routes)
+			}))
+		})
+	}
 }
 
 func TestParseDNSAssignCapsule(t *testing.T) {

@@ -201,6 +201,93 @@ func (r IPRoute) len() int { return 1 + r.StartIP.BitLen()/8 + r.EndIP.BitLen()/
 // this conversion can result in a large number of prefixes.
 func (r IPRoute) Prefixes() []netip.Prefix { return rangeToPrefixes(r.StartIP, r.EndIP) }
 
+// validateRouteAdvertisement checks the endpoints, ordering, and overlap rules in RFC 9484, Section 4.7.3.
+// https://www.rfc-editor.org/rfc/rfc9484.html#section-4.7.3
+func validateRouteAdvertisement(routes []IPRoute) error {
+	var numIPv4, numIPv4Protocol0, numIPv6Protocol0 int
+	for _, route := range routes {
+		if !route.StartIP.IsValid() || !route.EndIP.IsValid() {
+			return errors.New("invalid route: IP addresses must be valid")
+		}
+		if route.StartIP.Is4() != route.EndIP.Is4() {
+			return errors.New("invalid route: IP addresses must have the same address family")
+		}
+		if route.StartIP.Zone() != "" || route.EndIP.Zone() != "" {
+			return errors.New("invalid route: IP addresses must not have zones")
+		}
+		if route.StartIP.Compare(route.EndIP) > 0 {
+			return fmt.Errorf("invalid route: start IP %s is greater than end IP %s", route.StartIP, route.EndIP)
+		}
+		if route.StartIP.Is4() {
+			numIPv4++
+			if route.IPProtocol == 0 {
+				numIPv4Protocol0++
+			}
+		} else if route.IPProtocol == 0 {
+			numIPv6Protocol0++
+		}
+	}
+
+	// The RFC defines three rules for A preceding B. Checking adjacent pairs suffices.
+	for i := 1; i < len(routes); i++ {
+		a := routes[i-1]
+		b := routes[i]
+		// 1. "The IP Version of A MUST be less than or equal to the IP Version of B."
+		if a.StartIP.BitLen() > b.StartIP.BitLen() {
+			return errors.New("route IP versions must be in increasing order")
+		}
+		if a.StartIP.BitLen() != b.StartIP.BitLen() {
+			continue
+		}
+		// 2. Within one IP version, protocol(A) <= protocol(B).
+		if a.IPProtocol > b.IPProtocol {
+			return errors.New("route IP protocols must be in increasing order")
+		}
+		// 3. With matching versions and protocols, end(A) < start(B).
+		if a.IPProtocol == b.IPProtocol && a.EndIP.Compare(b.StartIP) >= 0 {
+			return errors.New("route address ranges must be disjoint and in increasing order")
+		}
+	}
+
+	// Rule 3 only compares routes with equal IPProtocol values.
+	// For example, advertising 192.0.2.0-192.0.2.255 with both IPProtocol 0 and 6 passes that check.
+	// The RFC forbids this overlap too: IPProtocol == 0 allows all protocols, including 6.
+	// Rule 1 groups routes by address family; rule 2 puts protocol 0 first in each family.
+	ipv4 := routes[:numIPv4]
+	if err := validateNonOverlappingRoutes(ipv4[:numIPv4Protocol0], ipv4[numIPv4Protocol0:]); err != nil {
+		return err
+	}
+	ipv6 := routes[numIPv4:]
+	return validateNonOverlappingRoutes(ipv6[:numIPv6Protocol0], ipv6[numIPv6Protocol0:])
+}
+
+// validateNonOverlappingRoutes checks routes allowing all protocols against routes
+// allowing a specific protocol. Both slices must belong to the same address family
+// and already be sorted by protocol and address.
+func validateNonOverlappingRoutes(all, specific []IPRoute) error {
+	var j int // cursor into all
+	for i, b := range specific {
+		if i > 0 && specific[i-1].IPProtocol != b.IPProtocol {
+			j = 0 // address ordering restarts for each protocol
+		}
+		for j < len(all) {
+			a := all[j]
+			if a.EndIP.Compare(b.StartIP) < 0 {
+				// a ends before b. Skip a for the rest of this protocol
+				j++
+				continue
+			}
+			if b.EndIP.Compare(a.StartIP) < 0 {
+				// b ends before a and every later route allowing all protocols
+				break
+			}
+			// neither range ends before the other starts: they overlap
+			return errors.New("route overlaps a route for all IP protocols")
+		}
+	}
+	return nil
+}
+
 func parseRouteAdvertisementCapsule(r http3.CapsuleReader) (*routeAdvertisementCapsule, error) {
 	var ranges []IPRoute
 	for r.Remaining() > 0 {
@@ -212,6 +299,9 @@ func parseRouteAdvertisementCapsule(r http3.CapsuleReader) (*routeAdvertisementC
 			return nil, err
 		}
 		ranges = append(ranges, ipRange)
+	}
+	if err := validateRouteAdvertisement(ranges); err != nil {
+		return nil, err
 	}
 	return &routeAdvertisementCapsule{IPAddressRanges: ranges}, nil
 }
@@ -268,10 +358,6 @@ func parseIPAddressRange(r io.Reader) (IPRoute, error) {
 		endIP = netip.AddrFrom16(end)
 	default:
 		return IPRoute{}, fmt.Errorf("invalid IP version: %d", ipVersion)
-	}
-
-	if startIP.Compare(endIP) > 0 {
-		return IPRoute{}, errors.New("start IP is greater than end IP")
 	}
 
 	var ipProtocol uint8
