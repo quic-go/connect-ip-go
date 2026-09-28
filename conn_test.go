@@ -395,6 +395,22 @@ func TestIncomingDatagrams(t *testing.T) {
 		require.NoError(t, conn.handleIncomingProxiedPacket(data))
 	})
 
+	t.Run("IPv6 extension headers", func(t *testing.T) {
+		conn := newProxiedConn(&mockStream{}, nil)
+		require.NoError(t, conn.AdvertiseRoute([]IPRoute{
+			{StartIP: netip.MustParseAddr("::"), EndIP: netip.MustParseAddr("ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff"), IPProtocol: 17},
+		}))
+		require.NoError(t, conn.handleIncomingProxiedPacket(composeIPv6Packet(ipProtoHopByHop, ipProtoFragment, 17)))
+		require.ErrorContains(t, conn.handleIncomingProxiedPacket(composeIPv6Packet(ipProtoDestOpts, 6)), "(protocol: 6)")
+		// ICMP is always allowed
+		require.NoError(t, conn.handleIncomingProxiedPacket(composeIPv6Packet(ipProtoHopByHop, ipProtoICMPv6)))
+
+		// fragments at non-zero offsets are allowed regardless of the protocol
+		fragment := composeIPv6Packet(ipProtoFragment, ipProtoDestOpts, 6)
+		fragment[ipv6.HeaderLen+2] = 1 // Fragment Offset
+		require.NoError(t, conn.handleIncomingProxiedPacket(fragment))
+	})
+
 	t.Run("packet from assigned address", func(t *testing.T) {
 		readChan := make(chan []byte, 1)
 		conn := newProxiedConn(&mockStream{toRead: readChan}, nil)
@@ -463,6 +479,7 @@ func FuzzIncomingDatagram(f *testing.F) {
 
 	f.Add(ipv4Header)
 	f.Add(ipv6Header)
+	f.Add(composeIPv6Packet(ipProtoHopByHop, ipProtoRouting, ipProtoFragment, ipProtoAH, ipProtoDestOpts, 42))
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		conn.handleIncomingProxiedPacket(data)
