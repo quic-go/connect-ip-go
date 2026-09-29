@@ -3,6 +3,7 @@ package connectip
 import (
 	"bytes"
 	"context"
+	"io"
 	"net"
 	"net/netip"
 	"testing"
@@ -39,7 +40,10 @@ var _ http3Stream = &mockStream{}
 func (m *mockStream) StreamID() quic.StreamID { panic("implement me") }
 func (m *mockStream) Read(p []byte) (int, error) {
 	if len(m.reading) == 0 {
-		m.reading = <-m.toRead
+		var ok bool
+		if m.reading, ok = <-m.toRead; !ok {
+			return 0, io.EOF
+		}
 	}
 	n := copy(p, m.reading)
 	m.reading = m.reading[n:]
@@ -530,4 +534,17 @@ func TestSendLargeDatagrams(t *testing.T) {
 	icmp, err := conn.WritePacket(data)
 	require.NoError(t, err)
 	require.NotNil(t, icmp)
+}
+
+func TestWritePacketAfterRemoteClose(t *testing.T) {
+	toRead := make(chan []byte)
+	conn := newProxiedConn(&mockStream{toRead: toRead}, nil)
+	close(toRead) // the peer closes the stream
+
+	_, err := conn.Routes(context.Background())
+	require.ErrorIs(t, err, net.ErrClosed)
+	// The mock stream always accepts datagrams,
+	// like an HTTP/3 stream does until its send side is closed.
+	_, err = conn.WritePacket(bytes.Clone(ipv6Header))
+	require.ErrorIs(t, err, net.ErrClosed)
 }
