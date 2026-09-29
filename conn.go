@@ -553,7 +553,10 @@ func (c *Conn) handleIncomingProxiedPacket(data []byte) error {
 		}
 		src = netip.AddrFrom16([16]byte(data[8:24]))
 		dst = netip.AddrFrom16([16]byte(data[24:40]))
-		ipProto = data[6]
+		var err error
+		if ipProto, err = ipv6UpperLayerProtocol(data); err != nil {
+			return err
+		}
 	}
 
 	c.mu.Lock()
@@ -588,8 +591,14 @@ func (c *Conn) handleIncomingProxiedPacket(data []byte) error {
 			if (ipVersion(data) == 4 && ipProto == ipProtoICMP) || (ipVersion(data) == 6 && ipProto == ipProtoICMPv6) {
 				return true
 			}
-			// TODO: walk the chain of IPv6 extensions
-			// See section 4.8 of RFC 9484 for details.
+			// Fragments at non-zero fragment offsets don't contain the upper-layer header.
+			// For a stateless firewall, there's no way to reassemble the original packet.
+			// In that case, we'd only drop the first fragment, but forward the rest.
+			// Without the first fragment, the receiver will not be able to reassemble the original packet.
+			// See Section 4 of RFC 7112.
+			if ipVersion(data) == 6 && ipProto == ipProtoFragment {
+				return true
+			}
 			return r.IPProtocol == 0 || r.IPProtocol == ipProto
 		})
 	}
