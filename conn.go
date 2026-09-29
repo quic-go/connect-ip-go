@@ -613,6 +613,14 @@ func (c *Conn) handleIncomingProxiedPacket(data []byte) error {
 // If sending the packet fails, it might return an ICMP packet.
 // It is the caller's responsibility to send the ICMP packet to the sender.
 func (c *Conn) WritePacket(b []byte) (icmp []byte, err error) {
+	// The stream's send side is closed asynchronously,
+	// so it might still accept datagrams after the connection was closed.
+	select {
+	case <-c.closeChan:
+		return nil, c.closeErr
+	default:
+	}
+
 	data, err := c.composeDatagram(b)
 	if err != nil {
 		log.Printf("dropping proxied packet (%d bytes) that can't be proxied: %s", len(b), err)
