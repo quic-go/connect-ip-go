@@ -325,7 +325,7 @@ func TestIncomingDatagrams(t *testing.T) {
 		require.NoError(t, err)
 		require.ErrorContains(t,
 			conn.handleIncomingProxiedPacket(data[:ipv4.HeaderLen-1]),
-			"connect-ip: malformed datagram: too short",
+			"connect-ip: IPv4 packet too short",
 		)
 	})
 
@@ -333,7 +333,7 @@ func TestIncomingDatagrams(t *testing.T) {
 		conn := newProxiedConn(&mockStream{}, nil)
 		require.ErrorContains(t,
 			conn.handleIncomingProxiedPacket(ipv6Header[:ipv6.HeaderLen-1]),
-			"connect-ip: malformed datagram: too short",
+			"connect-ip: IPv6 packet too short",
 		)
 	})
 
@@ -547,6 +547,12 @@ func FuzzIncomingDatagram(f *testing.F) {
 }
 
 func TestSendingDatagrams(t *testing.T) {
+	t.Run("empty packet", func(t *testing.T) {
+		conn := newProxiedConn(&mockStream{}, nil)
+		_, err := conn.composeDatagram([]byte{})
+		require.ErrorContains(t, err, "connect-ip: empty packet")
+	})
+
 	t.Run("invalid IP version", func(t *testing.T) {
 		conn := newProxiedConn(&mockStream{}, nil)
 		data := make([]byte, 20)
@@ -599,6 +605,7 @@ func TestSendingDatagrams(t *testing.T) {
 
 	t.Run("IPv4 header with options", func(t *testing.T) {
 		conn := newProxiedConn(&mockStream{}, nil)
+		require.NoError(t, conn.AssignAddresses([]netip.Prefix{netip.MustParsePrefix("159.70.42.98/32")}))
 		data := marshalIPv4Header(t, &ipv4.Header{
 			Src:     net.IPv4(1, 2, 3, 4),
 			Dst:     net.IPv4(159, 70, 42, 98),
@@ -626,11 +633,65 @@ func TestSendingDatagrams(t *testing.T) {
 		_, err = conn.composeDatagram(append(composeIPv6Packet(17), make([]byte, 8)...))
 		require.ErrorContains(t, err, "connect-ip: IPv6 payload length (0) doesn't match packet size (8)")
 	})
+
+	t.Run("address and protocol checks", func(t *testing.T) {
+		// the peer assigned 192.168.0.10 to us, and advertised a route for IP protocol 42
+		data := (&addressAssignCapsule{
+			AssignedAddresses: []AssignedAddress{{IPPrefix: netip.MustParsePrefix("192.168.0.10/32")}},
+		}).append(nil)
+		data = (&routeAdvertisementCapsule{IPAddressRanges: []IPRoute{
+			{StartIP: netip.MustParseAddr("10.0.0.0"), EndIP: netip.MustParseAddr("10.1.2.3"), IPProtocol: 42},
+		}}).append(data)
+		conn := newProxiedConn(&mockStream{reading: data}, nil)
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_, err := conn.Routes(ctx) // wait until both capsules have been processed
+		require.NoError(t, err)
+		// we assigned 172.16.0.1 to the peer, and advertised a route for IP protocol 6
+		require.NoError(t, conn.AssignAddresses([]netip.Prefix{netip.MustParsePrefix("172.16.0.1/32")}))
+		require.NoError(t, conn.AdvertiseRoute([]IPRoute{
+			{StartIP: netip.MustParseAddr("192.168.1.0"), EndIP: netip.MustParseAddr("192.168.1.255"), IPProtocol: 6},
+		}))
+
+		for _, tt := range []struct {
+			name     string
+			src, dst string
+			proto    int
+			wantErr  string
+		}{
+			{name: "assigned source", src: "192.168.0.10", dst: "10.1.2.3", proto: 42},
+			{name: "unassigned source", src: "192.168.0.11", dst: "10.1.2.3", proto: 42, wantErr: "source address not allowed: 192.168.0.11"},
+			{name: "source covered by our route, for any protocol", src: "192.168.1.1", dst: "10.1.2.3", proto: 42},
+			{name: "destination outside the peer's routes", src: "192.168.0.10", dst: "10.1.2.4", proto: 42, wantErr: "not allowed: 10.1.2.4 (protocol: 42)"},
+			{name: "protocol not allowed by the peer's route", src: "192.168.0.10", dst: "10.1.2.3", proto: 41, wantErr: "not allowed: 10.1.2.3 (protocol: 41)"},
+			{name: "destination assigned to the peer, for any protocol", src: "192.168.0.10", dst: "172.16.0.1", proto: 41},
+		} {
+			t.Run(tt.name, func(t *testing.T) {
+				packet := marshalIPv4Header(t, &ipv4.Header{
+					Src:      net.ParseIP(tt.src),
+					Dst:      net.ParseIP(tt.dst),
+					Protocol: tt.proto,
+					Len:      20,
+					TTL:      64,
+				})
+				orig := bytes.Clone(packet)
+				_, err := conn.composeDatagram(packet)
+				if tt.wantErr == "" {
+					require.NoError(t, err)
+					return
+				}
+				require.ErrorContains(t, err, tt.wantErr)
+				require.Equal(t, orig, packet) // dropped packets aren't modified
+			})
+		}
+	})
 }
 
 func TestSendLargeDatagrams(t *testing.T) {
 	str := &mockStream{sendDatagramErr: &quic.DatagramTooLargeError{}}
 	conn := newProxiedConn(str, nil)
+	// the peer didn't assign any addresses to us, so the source address isn't restricted
+	require.NoError(t, conn.AssignAddresses([]netip.Prefix{netip.MustParsePrefix("5.6.7.8/32")}))
 	data := marshalIPv4Header(t, &ipv4.Header{
 		Version:  4,
 		Len:      20,

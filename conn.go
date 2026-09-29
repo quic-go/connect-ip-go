@@ -13,9 +13,6 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/net/ipv4"
-	"golang.org/x/net/ipv6"
-
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 	"github.com/quic-go/quic-go/quicvarint"
@@ -27,11 +24,6 @@ type CloseError struct {
 
 func (e *CloseError) Error() string        { return net.ErrClosed.Error() }
 func (e *CloseError) Is(target error) bool { return target == net.ErrClosed }
-
-const (
-	ipProtoICMP   = 1
-	ipProtoICMPv6 = 58
-)
 
 type http3Stream interface {
 	io.ReadWriteCloser
@@ -78,7 +70,8 @@ type Conn struct {
 	queuedWrites         []streamWrite
 	peerAddresses        []netip.Prefix // IP prefixes that we assigned to the peer
 	localRoutes          []IPRoute      // IP routes that we advertised to the peer
-	assignedAddresses    []netip.Prefix
+	assignedAddresses    []netip.Prefix // IP prefixes that the peer assigned to us
+	peerRoutes           []IPRoute      // IP routes that the peer advertised to us
 	lastAddressRequestID AddressRequestID
 
 	closeChan chan struct{}
@@ -459,6 +452,10 @@ func (c *Conn) readFromStream() error {
 			if err != nil {
 				return err
 			}
+			// Store the routes first, so that WritePacket can send to them once Routes returns them.
+			c.mu.Lock()
+			c.peerRoutes = slices.Clone(capsule.IPAddressRanges)
+			c.mu.Unlock()
 			queueLatest(c.availableRouteUpdates, capsule.IPAddressRanges)
 		case capsuleTypeDNSAssign:
 			capsule, err := parseDNSAssignCapsule(cr)
@@ -532,40 +529,9 @@ start:
 }
 
 func (c *Conn) handleIncomingProxiedPacket(data []byte) error {
-	if len(data) == 0 {
-		return errors.New("connect-ip: empty packet")
-	}
-	var src, dst netip.Addr
-	var ipProto uint8
-	switch v := ipVersion(data); v {
-	default:
-		return fmt.Errorf("connect-ip: unknown IP versions: %d", v)
-	case 4:
-		if len(data) < ipv4.HeaderLen {
-			return fmt.Errorf("connect-ip: malformed datagram: too short")
-		}
-		if err := validateIPv4Checksum(data); err != nil {
-			return err
-		}
-		if err := validateIPv4TotalLength(data); err != nil {
-			return err
-		}
-		src = netip.AddrFrom4([4]byte(data[12:16]))
-		dst = netip.AddrFrom4([4]byte(data[16:20]))
-		ipProto = data[9]
-	case 6:
-		if len(data) < ipv6.HeaderLen {
-			return fmt.Errorf("connect-ip: malformed datagram: too short")
-		}
-		src = netip.AddrFrom16([16]byte(data[8:24]))
-		dst = netip.AddrFrom16([16]byte(data[24:40]))
-		if err := validateIPv6PayloadLength(data); err != nil {
-			return err
-		}
-		var err error
-		if ipProto, err = ipv6UpperLayerProtocol(data); err != nil {
-			return err
-		}
+	src, dst, ipProto, err := parseIPHeader(data)
+	if err != nil {
+		return err
 	}
 
 	c.mu.Lock()
@@ -587,31 +553,7 @@ func (c *Conn) handleIncomingProxiedPacket(data []byte) error {
 	// The destination IP address is valid if it
 	// 1. is within one of the ranges assigned to us, or
 	// 2. is within one of the ranges that we advertised to the peer.
-	var isAllowedDst bool
-	if len(assignedAddresses) > 0 {
-		isAllowedDst = slices.ContainsFunc(assignedAddresses, func(p netip.Prefix) bool { return p.Contains(dst) })
-	}
-	if !isAllowedDst {
-		isAllowedDst = slices.ContainsFunc(localRoutes, func(r IPRoute) bool {
-			if r.StartIP.Compare(dst) > 0 || dst.Compare(r.EndIP) > 0 {
-				return false
-			}
-			// ICMP is always allowed
-			if (ipVersion(data) == 4 && ipProto == ipProtoICMP) || (ipVersion(data) == 6 && ipProto == ipProtoICMPv6) {
-				return true
-			}
-			// Fragments at non-zero fragment offsets don't contain the upper-layer header.
-			// For a stateless firewall, there's no way to reassemble the original packet.
-			// In that case, we'd only drop the first fragment, but forward the rest.
-			// Without the first fragment, the receiver will not be able to reassemble the original packet.
-			// See Section 4 of RFC 7112.
-			if ipVersion(data) == 6 && ipProto == ipProtoFragment {
-				return true
-			}
-			return r.IPProtocol == 0 || r.IPProtocol == ipProto
-		})
-	}
-	if !isAllowedDst {
+	if !isAllowedDestination(dst, ipProto, assignedAddresses, localRoutes) {
 		// TODO: send ICMP
 		return fmt.Errorf("connect-ip: datagram destination address / protocol not allowed: %s (protocol: %d)", dst, ipProto)
 	}
@@ -619,6 +561,9 @@ func (c *Conn) handleIncomingProxiedPacket(data []byte) error {
 }
 
 // WritePacket writes an IP packet to the stream.
+// The packet is dropped unless its destination was assigned to the peer or matches one of the peer's routes.
+// If the peer assigned addresses to us, the source address needs to be one of these addresses,
+// or be covered by one of the routes that we advertised.
 // If sending the packet fails, it might return an ICMP packet.
 // It is the caller's responsibility to send the ICMP packet to the sender.
 func (c *Conn) WritePacket(b []byte) (icmp []byte, err error) {
@@ -654,23 +599,37 @@ func (c *Conn) WritePacket(b []byte) (icmp []byte, err error) {
 }
 
 func (c *Conn) composeDatagram(b []byte) ([]byte, error) {
-	// TODO: implement src, dst and ipproto checks
-	if len(b) == 0 {
-		return nil, nil
+	src, dst, ipProto, err := parseIPHeader(b)
+	if err != nil {
+		return nil, err
 	}
-	switch v := ipVersion(b); v {
-	default:
-		return nil, fmt.Errorf("connect-ip: unknown IP versions: %d", v)
+
+	c.mu.Lock()
+	assignedAddresses := c.assignedAddresses
+	localRoutes := c.localRoutes
+	peerAddresses := c.peerAddresses
+	peerRoutes := c.peerRoutes
+	c.mu.Unlock()
+
+	// The source IP address is valid if
+	// 1. the peer didn't assign any addresses to us, or
+	// 2. it is within one of the ranges assigned to us, or
+	// 3. it is within one of the ranges that we advertised to the peer (independent of the IP protocol),
+	//    since we're forwarding packets from these networks.
+	if assignedAddresses != nil &&
+		!slices.ContainsFunc(assignedAddresses, func(p netip.Prefix) bool { return p.Contains(src) }) &&
+		!slices.ContainsFunc(localRoutes, func(r IPRoute) bool { return r.contains(src) }) {
+		return nil, fmt.Errorf("connect-ip: source address not allowed: %s", src)
+	}
+	// The destination IP address is valid if it
+	// 1. is within one of the ranges that we assigned to the peer, or
+	// 2. is within one of the ranges that the peer advertised to us.
+	if !isAllowedDestination(dst, ipProto, peerAddresses, peerRoutes) {
+		return nil, fmt.Errorf("connect-ip: destination address / protocol not allowed: %s (protocol: %d)", dst, ipProto)
+	}
+
+	switch ipVersion(b) {
 	case 4:
-		if len(b) < ipv4.HeaderLen {
-			return nil, fmt.Errorf("connect-ip: IPv4 packet too short")
-		}
-		if err := validateIPv4Checksum(b); err != nil {
-			return nil, err
-		}
-		if err := validateIPv4TotalLength(b); err != nil {
-			return nil, err
-		}
 		ttl := b[8]
 		if ttl <= 1 {
 			return nil, fmt.Errorf("connect-ip: datagram TTL too small: %d", ttl)
@@ -680,12 +639,6 @@ func (c *Conn) composeDatagram(b []byte) ([]byte, error) {
 		hdrLen := int(b[0]&0x0f) * 4
 		binary.BigEndian.PutUint16(b[10:12], calculateIPv4Checksum(b[:hdrLen]))
 	case 6:
-		if len(b) < ipv6.HeaderLen {
-			return nil, fmt.Errorf("connect-ip: IPv6 packet too short")
-		}
-		if err := validateIPv6PayloadLength(b); err != nil {
-			return nil, err
-		}
 		hopLimit := b[7]
 		if hopLimit <= 1 {
 			return nil, fmt.Errorf("connect-ip: datagram Hop Limit too small: %d", hopLimit)
@@ -715,5 +668,3 @@ func (c *Conn) Close() error {
 	}
 	return err
 }
-
-func ipVersion(b []byte) uint8 { return b[0] >> 4 }
