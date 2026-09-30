@@ -12,6 +12,7 @@ import (
 	"golang.org/x/net/ipv4"
 	"golang.org/x/net/ipv6"
 
+	ossfuzzseeds "github.com/quic-go/go-ossfuzz-seeds"
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 	"github.com/quic-go/quic-go/quicvarint"
@@ -463,7 +464,11 @@ func TestSkipUnknownCapsule(t *testing.T) {
 }
 
 func FuzzIncomingDatagram(f *testing.F) {
-	conn := newProxiedConn(&mockStream{}, nil)
+	// OSS-Fuzz runs this function once per input, so the connection must not leak goroutines.
+	readChan := make(chan []byte)
+	defer close(readChan)
+	conn := newProxiedConn(&mockStream{toRead: readChan}, nil)
+	defer conn.Close()
 	require.NoError(f, conn.AssignAddresses([]netip.Prefix{
 		netip.MustParsePrefix("192.168.0.0/16"),
 		netip.MustParsePrefix("2001:db8::0/64"),
@@ -481,9 +486,10 @@ func FuzzIncomingDatagram(f *testing.F) {
 	}).Marshal()
 	require.NoError(f, err)
 
-	f.Add(ipv4Header)
-	f.Add(ipv6Header)
-	f.Add(composeIPv6Packet(ipProtoHopByHop, ipProtoRouting, ipProtoFragment, ipProtoAH, ipProtoDestOpts, 42))
+	corpus := ossfuzzseeds.New(f)
+	corpus.Add(ipv4Header)
+	corpus.Add(ipv6Header)
+	corpus.Add(composeIPv6Packet(ipProtoHopByHop, ipProtoRouting, ipProtoFragment, ipProtoAH, ipProtoDestOpts, 42))
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		conn.handleIncomingProxiedPacket(data)
