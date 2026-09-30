@@ -3,6 +3,7 @@ package connectip
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 
 	"golang.org/x/net/ipv6"
 )
@@ -17,6 +18,17 @@ const (
 )
 
 var errTruncatedExtensionHeader = errors.New("connect-ip: malformed datagram: truncated IPv6 extension header")
+
+// validateIPv6PayloadLength checks that the Payload Length field matches the packet size.
+// An HTTP Datagram contains exactly one IP packet, with no trailing bytes (Section 6 of RFC 9484).
+func validateIPv6PayloadLength(b []byte) error {
+	// A Payload Length of zero is also used by jumbograms (RFC 2675), which are rejected here.
+	// Jumbograms are larger than 65535 bytes, and therefore never fit into a QUIC DATAGRAM frame.
+	if l := int(binary.BigEndian.Uint16(b[4:6])); ipv6.HeaderLen+l != len(b) {
+		return fmt.Errorf("connect-ip: IPv6 payload length (%d) doesn't match packet size (%d)", l, len(b)-ipv6.HeaderLen)
+	}
+	return nil
+}
 
 // ipv6UpperLayerProtocol walks the extension header chain of an IPv6 packet
 // and returns the upper-layer protocol number.

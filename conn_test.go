@@ -23,7 +23,7 @@ import (
 
 var ipv6Header = []byte{
 	0x60, 0x00, 0x00, 0x00, // Version, Traffic Class, Flow Label
-	0x00, 0x20, 59, 64, // Payload Length, Next Header, Hop Limit
+	0x00, 0x00, 59, 64, // Payload Length, Next Header, Hop Limit
 	0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, // Source IP
 	0x20, 0x01, 0x0d, 0xb8, 0x85, 0xa3, 0x08, 0xd3, 0x13, 0x19, 0x8a, 0x2e, 0x03, 0x70, 0x73, 0x48, // Destination IP
 }
@@ -325,6 +325,18 @@ func TestIncomingDatagrams(t *testing.T) {
 		)
 	})
 
+	t.Run("IPv6 payload length mismatch", func(t *testing.T) {
+		conn := newProxiedConn(&mockStream{}, nil)
+		require.ErrorContains(t,
+			conn.handleIncomingProxiedPacket(composeIPv6Packet(ipProtoDestOpts, 17)[:50]),
+			"connect-ip: IPv6 payload length (16) doesn't match packet size (10)",
+		)
+		require.ErrorContains(t,
+			conn.handleIncomingProxiedPacket(append(composeIPv6Packet(17), make([]byte, 8)...)),
+			"connect-ip: IPv6 payload length (0) doesn't match packet size (8)",
+		)
+	})
+
 	t.Run("invalid source address", func(t *testing.T) {
 		conn := newProxiedConn(&mockStream{}, nil)
 		require.NoError(t, conn.AssignAddresses([]netip.Prefix{netip.MustParsePrefix("192.168.0.10/32")}))
@@ -522,6 +534,14 @@ func TestSendingDatagrams(t *testing.T) {
 		conn := newProxiedConn(&mockStream{}, nil)
 		_, err := conn.composeDatagram(ipv6Header[:ipv6.HeaderLen-1])
 		require.ErrorContains(t, err, "connect-ip: IPv6 packet too short")
+	})
+
+	t.Run("IPv6 payload length mismatch", func(t *testing.T) {
+		conn := newProxiedConn(&mockStream{}, nil)
+		_, err := conn.composeDatagram(composeIPv6Packet(ipProtoDestOpts, 17)[:50])
+		require.ErrorContains(t, err, "connect-ip: IPv6 payload length (16) doesn't match packet size (10)")
+		_, err = conn.composeDatagram(append(composeIPv6Packet(17), make([]byte, 8)...))
+		require.ErrorContains(t, err, "connect-ip: IPv6 payload length (0) doesn't match packet size (8)")
 	})
 }
 
