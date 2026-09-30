@@ -544,6 +544,9 @@ func (c *Conn) handleIncomingProxiedPacket(data []byte) error {
 		if len(data) < ipv4.HeaderLen {
 			return fmt.Errorf("connect-ip: malformed datagram: too short")
 		}
+		if err := validateIPv4Checksum(data); err != nil {
+			return err
+		}
 		src = netip.AddrFrom4([4]byte(data[12:16]))
 		dst = netip.AddrFrom4([4]byte(data[16:20]))
 		ipProto = data[9]
@@ -658,6 +661,9 @@ func (c *Conn) composeDatagram(b []byte) ([]byte, error) {
 	case 4:
 		if len(b) < ipv4.HeaderLen {
 			return nil, fmt.Errorf("connect-ip: IPv4 packet too short")
+		}
+		if err := validateIPv4Checksum(b); err != nil {
+			return nil, err
 		}
 		ttl := b[8]
 		if ttl <= 1 {

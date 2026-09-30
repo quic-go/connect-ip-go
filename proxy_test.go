@@ -170,9 +170,7 @@ func TestTTLs(t *testing.T) {
 			Src: net.IPv4(192, 168, 1, 1),
 			Dst: net.IPv4(8, 8, 8, 8),
 		}
-		packetTTL1, err := hdrTTL1.Marshal()
-		require.NoError(t, err)
-		icmp, err := client.WritePacket(packetTTL1)
+		icmp, err := client.WritePacket(marshalIPv4Header(t, hdrTTL1))
 		require.NoError(t, err)
 		require.Empty(t, icmp)
 
@@ -183,9 +181,7 @@ func TestTTLs(t *testing.T) {
 			Src: net.IPv4(192, 168, 1, 1),
 			Dst: net.IPv4(8, 8, 8, 8),
 		}
-		packet, err := hdr.Marshal()
-		require.NoError(t, err)
-		icmp, err = client.WritePacket(packet)
+		icmp, err = client.WritePacket(marshalIPv4Header(t, hdr))
 		require.NoError(t, err)
 		require.Empty(t, icmp)
 
