@@ -18,7 +18,7 @@ var ipv4ChecksumTestVector = [ipv4.HeaderLen]byte{
 }
 
 func TestIPv4ChecksumTestVector(t *testing.T) {
-	require.Equal(t, uint16(0xb861), calculateIPv4Checksum(ipv4ChecksumTestVector))
+	require.Equal(t, uint16(0xb861), calculateIPv4Checksum(ipv4ChecksumTestVector[:]))
 }
 
 func TestValidateIPv4Checksum(t *testing.T) {
