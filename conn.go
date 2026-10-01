@@ -239,13 +239,13 @@ func (c *Conn) ReceiveAddressRequest(ctx context.Context) (*AddressRequest, erro
 }
 
 // AssignAddresses schedules an assignment of address prefixes to the peer.
+// A nil or empty slice removes all assigned addresses.
 func (c *Conn) AssignAddresses(prefixes []netip.Prefix) error {
-	capsule := &addressAssignCapsule{}
-	if prefixes != nil {
-		capsule.AssignedAddresses = make([]AssignedAddress, len(prefixes))
-		for i, p := range prefixes {
-			capsule.AssignedAddresses[i] = AssignedAddress{IPPrefix: p}
-		}
+	capsule := &addressAssignCapsule{
+		AssignedAddresses: make([]AssignedAddress, len(prefixes)),
+	}
+	for i, p := range prefixes {
+		capsule.AssignedAddresses[i] = AssignedAddress{IPPrefix: p}
 	}
 	return c.sendAddressAssignment(capsule)
 }
@@ -270,11 +270,8 @@ func (c *Conn) sendAddressAssignment(capsule *addressAssignCapsule) error {
 		return err
 	}
 
-	var prefixes []netip.Prefix
-	// Preserve nil (no source restriction) versus an empty assignment.
-	if capsule.AssignedAddresses != nil {
-		prefixes = make([]netip.Prefix, 0, len(capsule.AssignedAddresses))
-	}
+	// Keep an empty assignment distinct from not having sent one.
+	prefixes := make([]netip.Prefix, 0, len(capsule.AssignedAddresses))
 	for _, assigned := range capsule.AssignedAddresses {
 		if !assigned.Rejected() {
 			prefixes = append(prefixes, assigned.IPPrefix)

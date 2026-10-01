@@ -295,6 +295,27 @@ func TestPREF64Configuration(t *testing.T) {
 	})
 }
 
+func TestEmptyAddressAssignment(t *testing.T) {
+	for name, prefixes := range map[string][]netip.Prefix{"nil": nil, "empty": {}} {
+		t.Run(name, func(t *testing.T) {
+			readChan := make(chan []byte)
+			defer close(readChan)
+			conn := newProxiedConn(&mockStream{toRead: readChan}, nil)
+			defer conn.Close()
+			require.NoError(t, conn.AdvertiseRoute([]IPRoute{
+				{StartIP: netip.MustParseAddr("::"), EndIP: netip.MustParseAddr("ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff")},
+			}))
+			require.NoError(t, conn.handleIncomingProxiedPacket(ipv6Header))
+
+			require.NoError(t, conn.AssignAddresses([]netip.Prefix{netip.MustParsePrefix("2001:db8::1/128")}))
+			require.NoError(t, conn.handleIncomingProxiedPacket(ipv6Header))
+
+			require.NoError(t, conn.AssignAddresses(prefixes))
+			require.ErrorContains(t, conn.handleIncomingProxiedPacket(ipv6Header), "source address not allowed: 2001:db8::1")
+		})
+	}
+}
+
 func TestIncomingDatagrams(t *testing.T) {
 	t.Run("empty packets", func(t *testing.T) {
 		conn := newProxiedConn(&mockStream{}, nil)
