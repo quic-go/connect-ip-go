@@ -53,7 +53,7 @@ func TestICMPTooLargeIPv4(t *testing.T) {
 			require.Equal(t, ipProtoICMP, hdr.Protocol)
 			require.Equal(t, dst.String(), hdr.Src.String())
 			require.Equal(t, src.String(), hdr.Dst.String())
-			require.Equal(t, uint16(hdr.Checksum), calculateIPv4Checksum(([20]byte)(data)))
+			require.Equal(t, uint16(hdr.Checksum), calculateIPv4Checksum(data[:ipv4.HeaderLen]))
 			// parse ICMP message
 			icmpMsg, err := icmp.ParseMessage(ipProtoICMP, data[ipv4.HeaderLen:])
 			require.NoError(t, err)
