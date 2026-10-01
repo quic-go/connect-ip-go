@@ -553,6 +553,9 @@ func (c *Conn) handleIncomingProxiedPacket(data []byte) error {
 		}
 		src = netip.AddrFrom16([16]byte(data[8:24]))
 		dst = netip.AddrFrom16([16]byte(data[24:40]))
+		if err := validateIPv6PayloadLength(data); err != nil {
+			return err
+		}
 		var err error
 		if ipProto, err = ipv6UpperLayerProtocol(data); err != nil {
 			return err
@@ -666,6 +669,9 @@ func (c *Conn) composeDatagram(b []byte) ([]byte, error) {
 	case 6:
 		if len(b) < ipv6.HeaderLen {
 			return nil, fmt.Errorf("connect-ip: IPv6 packet too short")
+		}
+		if err := validateIPv6PayloadLength(b); err != nil {
+			return nil, err
 		}
 		hopLimit := b[7]
 		if hopLimit <= 1 {
