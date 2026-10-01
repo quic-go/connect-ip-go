@@ -3,6 +3,7 @@ package connectip
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"io"
 	"net"
 	"net/netip"
@@ -26,6 +27,15 @@ var ipv6Header = []byte{
 	0x00, 0x00, 59, 64, // Payload Length, Next Header, Hop Limit
 	0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, // Source IP
 	0x20, 0x01, 0x0d, 0xb8, 0x85, 0xa3, 0x08, 0xd3, 0x13, 0x19, 0x8a, 0x2e, 0x03, 0x70, 0x73, 0x48, // Destination IP
+}
+
+// marshalIPv4Header marshals an IPv4 header without options, and sets a valid header checksum.
+func marshalIPv4Header(t *testing.T, hdr *ipv4.Header) []byte {
+	t.Helper()
+	b, err := hdr.Marshal()
+	require.NoError(t, err)
+	binary.BigEndian.PutUint16(b[10:12], calculateIPv4Checksum([ipv4.HeaderLen]byte(b)))
+	return b
 }
 
 type mockStream struct {
@@ -337,6 +347,17 @@ func TestIncomingDatagrams(t *testing.T) {
 		)
 	})
 
+	t.Run("invalid IPv4 checksum", func(t *testing.T) {
+		conn := newProxiedConn(&mockStream{}, nil)
+		data := marshalIPv4Header(t, &ipv4.Header{
+			Src: net.IPv4(1, 2, 3, 4),
+			Dst: net.IPv4(159, 70, 42, 98),
+			Len: 20,
+		})
+		data[10]++ // corrupt the checksum
+		require.ErrorContains(t, conn.handleIncomingProxiedPacket(data), "connect-ip: invalid IPv4 header checksum")
+	})
+
 	t.Run("invalid source address", func(t *testing.T) {
 		conn := newProxiedConn(&mockStream{}, nil)
 		require.NoError(t, conn.AssignAddresses([]netip.Prefix{netip.MustParsePrefix("192.168.0.10/32")}))
@@ -346,8 +367,7 @@ func TestIncomingDatagrams(t *testing.T) {
 			Len:      20,
 			Checksum: 89,
 		}
-		data, err := hdr.Marshal()
-		require.NoError(t, err)
+		data := marshalIPv4Header(t, hdr)
 		require.ErrorContains(t,
 			conn.handleIncomingProxiedPacket(data),
 			"connect-ip: datagram source address not allowed: 192.168.0.11",
@@ -366,14 +386,12 @@ func TestIncomingDatagrams(t *testing.T) {
 			Len:      20,
 			Checksum: 89,
 		}
-		data, err := hdr.Marshal()
-		require.NoError(t, err)
+		data := marshalIPv4Header(t, hdr)
 		require.NoError(t, conn.handleIncomingProxiedPacket(data))
 
 		// 10.1.2.4 is outside the range of allowed addresses
 		hdr.Dst = net.IPv4(10, 1, 2, 4)
-		data, err = hdr.Marshal()
-		require.NoError(t, err)
+		data = marshalIPv4Header(t, hdr)
 		require.ErrorContains(t,
 			conn.handleIncomingProxiedPacket(data),
 			"connect-ip: datagram destination address / protocol not allowed: 10.1.2.4 (protocol: 0)",
@@ -393,13 +411,11 @@ func TestIncomingDatagrams(t *testing.T) {
 			Checksum: 89,
 			Protocol: 42,
 		}
-		data, err := hdr.Marshal()
-		require.NoError(t, err)
+		data := marshalIPv4Header(t, hdr)
 		require.NoError(t, conn.handleIncomingProxiedPacket(data))
 
 		hdr.Protocol = 41
-		data, err = hdr.Marshal()
-		require.NoError(t, err)
+		data = marshalIPv4Header(t, hdr)
 		require.ErrorContains(t,
 			conn.handleIncomingProxiedPacket(data),
 			"connect-ip: datagram destination address / protocol not allowed: 10.1.2.3 (protocol: 41)",
@@ -407,8 +423,7 @@ func TestIncomingDatagrams(t *testing.T) {
 
 		// ICMP is always allowed
 		hdr.Protocol = ipProtoICMP
-		data, err = hdr.Marshal()
-		require.NoError(t, err)
+		data = marshalIPv4Header(t, hdr)
 		require.NoError(t, conn.handleIncomingProxiedPacket(data))
 	})
 
@@ -438,8 +453,7 @@ func TestIncomingDatagrams(t *testing.T) {
 			Len:      20,
 			Checksum: 89,
 		}
-		data, err := hdr.Marshal()
-		require.NoError(t, err)
+		data := marshalIPv4Header(t, hdr)
 		require.Error(t, conn.handleIncomingProxiedPacket(data), "connect-ip: datagram destination address")
 
 		// now assign 192.168.0.11 to this connection
@@ -449,7 +463,7 @@ func TestIncomingDatagrams(t *testing.T) {
 
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
-		_, err = conn.ReceiveAddressAssignment(ctx)
+		_, err := conn.ReceiveAddressAssignment(ctx)
 		require.NoError(t, err)
 		// after processing the address assignment, this is a valid packet
 		require.NoError(t, conn.handleIncomingProxiedPacket(data))
@@ -490,13 +504,15 @@ func FuzzIncomingDatagram(f *testing.F) {
 		{StartIP: netip.MustParseAddr("2001:db8:1::"), EndIP: netip.MustParseAddr("2001:db8:1::ffff"), IPProtocol: 42},
 	}))
 
+	// Don't use marshalIPv4Header here: OSS-Fuzz builds replace *testing.F with a type
+	// that doesn't implement testing.T.
 	ipv4Header, err := (&ipv4.Header{
-		Src:      net.IPv4(1, 2, 3, 4),
-		Dst:      net.IPv4(159, 70, 42, 98),
-		Len:      20,
-		Checksum: 89,
+		Src: net.IPv4(1, 2, 3, 4),
+		Dst: net.IPv4(159, 70, 42, 98),
+		Len: 20,
 	}).Marshal()
 	require.NoError(f, err)
+	binary.BigEndian.PutUint16(ipv4Header[10:12], calculateIPv4Checksum([ipv4.HeaderLen]byte(ipv4Header)))
 
 	corpus := ossfuzzseeds.New(f)
 	corpus.Add(ipv4Header)
@@ -530,6 +546,19 @@ func TestSendingDatagrams(t *testing.T) {
 		require.ErrorContains(t, err, "connect-ip: IPv4 packet too short")
 	})
 
+	t.Run("invalid IPv4 checksum", func(t *testing.T) {
+		conn := newProxiedConn(&mockStream{}, nil)
+		data := marshalIPv4Header(t, &ipv4.Header{
+			Src: net.IPv4(1, 2, 3, 4),
+			Dst: net.IPv4(159, 70, 42, 98),
+			Len: 20,
+			TTL: 64,
+		})
+		data[10]++ // corrupt the checksum
+		_, err := conn.composeDatagram(data)
+		require.ErrorContains(t, err, "connect-ip: invalid IPv4 header checksum")
+	})
+
 	t.Run("IPv6 packet too short", func(t *testing.T) {
 		conn := newProxiedConn(&mockStream{}, nil)
 		_, err := conn.composeDatagram(ipv6Header[:ipv6.HeaderLen-1])
@@ -548,15 +577,14 @@ func TestSendingDatagrams(t *testing.T) {
 func TestSendLargeDatagrams(t *testing.T) {
 	str := &mockStream{sendDatagramErr: &quic.DatagramTooLargeError{}}
 	conn := newProxiedConn(str, nil)
-	data, err := (&ipv4.Header{
+	data := marshalIPv4Header(t, &ipv4.Header{
 		Version:  4,
 		Len:      20,
 		TTL:      64,
 		Src:      net.IPv4(1, 2, 3, 4),
 		Dst:      net.IPv4(5, 6, 7, 8),
 		Protocol: 17,
-	}).Marshal()
-	require.NoError(t, err)
+	})
 	icmp, err := conn.WritePacket(data)
 	require.NoError(t, err)
 	require.NotNil(t, icmp)
