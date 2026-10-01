@@ -655,56 +655,90 @@ func TestSendingDatagrams(t *testing.T) {
 		require.ErrorContains(t, err, "connect-ip: IPv6 payload length (0) doesn't match packet size (8)")
 	})
 
-	t.Run("address and protocol checks", func(t *testing.T) {
-		// the peer assigned 192.168.0.10 to us, and advertised a route for IP protocol 42
+	t.Run("source address", func(t *testing.T) {
+		readChan := make(chan []byte)
+		defer close(readChan)
+
 		data := (&addressAssignCapsule{
 			AssignedAddresses: []AssignedAddress{{IPPrefix: netip.MustParsePrefix("192.168.0.10/32")}},
 		}).append(nil)
-		data = (&routeAdvertisementCapsule{IPAddressRanges: []IPRoute{
-			{StartIP: netip.MustParseAddr("10.0.0.0"), EndIP: netip.MustParseAddr("10.1.2.3"), IPProtocol: 42},
-		}}).append(data)
-		conn := newProxiedConn(&mockStream{reading: data}, nil)
+		conn := newProxiedConn(&mockStream{reading: data, toRead: readChan}, nil)
+		defer conn.Close()
+
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
-		_, err := conn.Routes(ctx) // wait until both capsules have been processed
+		_, err := conn.ReceiveAddressAssignment(ctx)
 		require.NoError(t, err)
-		// we assigned 172.16.0.1 to the peer, and advertised a route for IP protocol 6
-		require.NoError(t, conn.AssignAddresses([]netip.Prefix{netip.MustParsePrefix("172.16.0.1/32")}))
-		require.NoError(t, conn.AdvertiseRoute([]IPRoute{
-			{StartIP: netip.MustParseAddr("192.168.1.0"), EndIP: netip.MustParseAddr("192.168.1.255"), IPProtocol: 6},
-		}))
+		require.NoError(t, conn.AssignAddresses([]netip.Prefix{netip.MustParsePrefix("10.1.2.3/32")}))
 
-		for _, tt := range []struct {
-			name     string
-			src, dst string
-			proto    int
-			wantErr  string
-		}{
-			{name: "assigned source", src: "192.168.0.10", dst: "10.1.2.3", proto: 42},
-			{name: "unassigned source", src: "192.168.0.11", dst: "10.1.2.3", proto: 42, wantErr: "source address not allowed: 192.168.0.11"},
-			{name: "source covered by our route, for any protocol", src: "192.168.1.1", dst: "10.1.2.3", proto: 42},
-			{name: "destination outside the peer's routes", src: "192.168.0.10", dst: "10.1.2.4", proto: 42, wantErr: "not allowed: 10.1.2.4 (protocol: 42)"},
-			{name: "protocol not allowed by the peer's route", src: "192.168.0.10", dst: "10.1.2.3", proto: 41, wantErr: "not allowed: 10.1.2.3 (protocol: 41)"},
-			{name: "destination assigned to the peer, for any protocol", src: "192.168.0.10", dst: "172.16.0.1", proto: 41},
-		} {
-			t.Run(tt.name, func(t *testing.T) {
-				packet := marshalIPv4Header(t, &ipv4.Header{
-					Src:      net.ParseIP(tt.src),
-					Dst:      net.ParseIP(tt.dst),
-					Protocol: tt.proto,
-					Len:      20,
-					TTL:      64,
-				})
-				orig := bytes.Clone(packet)
-				_, err := conn.composeDatagram(packet)
-				if tt.wantErr == "" {
-					require.NoError(t, err)
-					return
-				}
-				require.ErrorContains(t, err, tt.wantErr)
-				require.Equal(t, orig, packet) // dropped packets aren't modified
-			})
+		hdr := &ipv4.Header{
+			Src:      net.IPv4(192, 168, 0, 10),
+			Dst:      net.IPv4(10, 1, 2, 3),
+			Protocol: 42,
+			Len:      20,
+			TTL:      64,
 		}
+		_, err = conn.composeDatagram(marshalIPv4Header(t, hdr))
+		require.NoError(t, err)
+
+		hdr.Src = net.IPv4(192, 168, 0, 11)
+		packet := marshalIPv4Header(t, hdr)
+		orig := bytes.Clone(packet)
+		_, err = conn.composeDatagram(packet)
+		require.ErrorContains(t, err, "source address not allowed: 192.168.0.11")
+		require.Equal(t, orig, packet)
+
+		// Advertising the source's network allows forwarding, regardless of protocol.
+		require.NoError(t, conn.AdvertiseRoute([]IPRoute{
+			{StartIP: netip.MustParseAddr("192.168.0.0"), EndIP: netip.MustParseAddr("192.168.0.255"), IPProtocol: 6},
+		}))
+		_, err = conn.composeDatagram(packet)
+		require.NoError(t, err)
+	})
+
+	t.Run("destination address and protocol", func(t *testing.T) {
+		readChan := make(chan []byte)
+		defer close(readChan)
+		data := (&routeAdvertisementCapsule{IPAddressRanges: []IPRoute{
+			{StartIP: netip.MustParseAddr("10.0.0.0"), EndIP: netip.MustParseAddr("10.1.2.3"), IPProtocol: 42},
+		}}).append(nil)
+		conn := newProxiedConn(&mockStream{reading: data, toRead: readChan}, nil)
+		defer conn.Close()
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_, err := conn.Routes(ctx)
+		require.NoError(t, err)
+
+		hdr := &ipv4.Header{
+			Src:      net.IPv4(192, 168, 0, 10),
+			Dst:      net.IPv4(10, 1, 2, 3),
+			Protocol: 42,
+			Len:      20,
+			TTL:      64,
+		}
+		_, err = conn.composeDatagram(marshalIPv4Header(t, hdr))
+		require.NoError(t, err)
+
+		hdr.Dst = net.IPv4(10, 1, 2, 4)
+		packet := marshalIPv4Header(t, hdr)
+		orig := bytes.Clone(packet)
+		_, err = conn.composeDatagram(packet)
+		require.ErrorContains(t, err, "not allowed: 10.1.2.4 (protocol: 42)")
+		require.Equal(t, orig, packet)
+
+		hdr.Dst = net.IPv4(10, 1, 2, 3)
+		hdr.Protocol = 41
+		packet = marshalIPv4Header(t, hdr)
+		orig = bytes.Clone(packet)
+		_, err = conn.composeDatagram(packet)
+		require.ErrorContains(t, err, "not allowed: 10.1.2.3 (protocol: 41)")
+		require.Equal(t, orig, packet)
+
+		// An address assigned to the peer is reachable for any protocol.
+		require.NoError(t, conn.AssignAddresses([]netip.Prefix{netip.MustParsePrefix("172.16.0.1/32")}))
+		hdr.Dst = net.IPv4(172, 16, 0, 1)
+		_, err = conn.composeDatagram(marshalIPv4Header(t, hdr))
+		require.NoError(t, err)
 	})
 }
 
