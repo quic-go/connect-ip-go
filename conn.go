@@ -547,6 +547,9 @@ func (c *Conn) handleIncomingProxiedPacket(data []byte) error {
 		if err := validateIPv4Checksum(data); err != nil {
 			return err
 		}
+		if err := validateIPv4TotalLength(data); err != nil {
+			return err
+		}
 		src = netip.AddrFrom4([4]byte(data[12:16]))
 		dst = netip.AddrFrom4([4]byte(data[16:20]))
 		ipProto = data[9]
@@ -663,6 +666,9 @@ func (c *Conn) composeDatagram(b []byte) ([]byte, error) {
 			return nil, fmt.Errorf("connect-ip: IPv4 packet too short")
 		}
 		if err := validateIPv4Checksum(b); err != nil {
+			return nil, err
+		}
+		if err := validateIPv4TotalLength(b); err != nil {
 			return nil, err
 		}
 		ttl := b[8]

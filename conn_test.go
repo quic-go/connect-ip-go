@@ -29,11 +29,13 @@ var ipv6Header = []byte{
 	0x20, 0x01, 0x0d, 0xb8, 0x85, 0xa3, 0x08, 0xd3, 0x13, 0x19, 0x8a, 0x2e, 0x03, 0x70, 0x73, 0x48, // Destination IP
 }
 
-// marshalIPv4Header marshals an IPv4 header without options, and sets a valid header checksum.
+// marshalIPv4Header marshals an IPv4 header without options, and sets the Total Length and a valid header checksum.
 func marshalIPv4Header(t *testing.T, hdr *ipv4.Header) []byte {
 	t.Helper()
 	b, err := hdr.Marshal()
 	require.NoError(t, err)
+	// on some platforms (e.g. macOS), Marshal uses the host byte order for the Total Length
+	binary.BigEndian.PutUint16(b[2:4], uint16(len(b)))
 	binary.BigEndian.PutUint16(b[10:12], calculateIPv4Checksum([ipv4.HeaderLen]byte(b)))
 	return b
 }
@@ -358,6 +360,25 @@ func TestIncomingDatagrams(t *testing.T) {
 		require.ErrorContains(t, conn.handleIncomingProxiedPacket(data), "connect-ip: invalid IPv4 header checksum")
 	})
 
+	t.Run("IPv4 total length mismatch", func(t *testing.T) {
+		conn := newProxiedConn(&mockStream{}, nil)
+		data := marshalIPv4Header(t, &ipv4.Header{
+			Src: net.IPv4(1, 2, 3, 4),
+			Dst: net.IPv4(159, 70, 42, 98),
+			Len: 20,
+		})
+		require.ErrorContains(t,
+			conn.handleIncomingProxiedPacket(append(data, 0, 0, 0, 0)),
+			"connect-ip: IPv4 total length (20) doesn't match packet size (24)",
+		)
+		binary.BigEndian.PutUint16(data[2:4], 24)
+		binary.BigEndian.PutUint16(data[10:12], calculateIPv4Checksum([ipv4.HeaderLen]byte(data)))
+		require.ErrorContains(t,
+			conn.handleIncomingProxiedPacket(data),
+			"connect-ip: IPv4 total length (24) doesn't match packet size (20)",
+		)
+	})
+
 	t.Run("invalid source address", func(t *testing.T) {
 		conn := newProxiedConn(&mockStream{}, nil)
 		require.NoError(t, conn.AssignAddresses([]netip.Prefix{netip.MustParsePrefix("192.168.0.10/32")}))
@@ -512,6 +533,7 @@ func FuzzIncomingDatagram(f *testing.F) {
 		Len: 20,
 	}).Marshal()
 	require.NoError(f, err)
+	binary.BigEndian.PutUint16(ipv4Header[2:4], uint16(len(ipv4Header)))
 	binary.BigEndian.PutUint16(ipv4Header[10:12], calculateIPv4Checksum([ipv4.HeaderLen]byte(ipv4Header)))
 
 	corpus := ossfuzzseeds.New(f)
@@ -557,6 +579,22 @@ func TestSendingDatagrams(t *testing.T) {
 		data[10]++ // corrupt the checksum
 		_, err := conn.composeDatagram(data)
 		require.ErrorContains(t, err, "connect-ip: invalid IPv4 header checksum")
+	})
+
+	t.Run("IPv4 total length mismatch", func(t *testing.T) {
+		conn := newProxiedConn(&mockStream{}, nil)
+		data := marshalIPv4Header(t, &ipv4.Header{
+			Src: net.IPv4(1, 2, 3, 4),
+			Dst: net.IPv4(159, 70, 42, 98),
+			Len: 20,
+			TTL: 64,
+		})
+		_, err := conn.composeDatagram(append(data, 0, 0, 0, 0))
+		require.ErrorContains(t, err, "connect-ip: IPv4 total length (20) doesn't match packet size (24)")
+		binary.BigEndian.PutUint16(data[2:4], 24)
+		binary.BigEndian.PutUint16(data[10:12], calculateIPv4Checksum([ipv4.HeaderLen]byte(data)))
+		_, err = conn.composeDatagram(data)
+		require.ErrorContains(t, err, "connect-ip: IPv4 total length (24) doesn't match packet size (20)")
 	})
 
 	t.Run("IPv6 packet too short", func(t *testing.T) {

@@ -42,3 +42,14 @@ func validateIPv4Checksum(b []byte) error {
 	}
 	return nil
 }
+
+// validateIPv4TotalLength checks that the Total Length field matches the packet size.
+// An HTTP Datagram contains exactly one IP packet, with no trailing bytes (Section 6 of RFC 9484).
+// Since validateIPv4Checksum checks that the header fits into the packet,
+// this also ensures that the Total Length covers the header (Section 5.2.2 of RFC 1812).
+func validateIPv4TotalLength(b []byte) error {
+	if l := int(binary.BigEndian.Uint16(b[2:4])); l != len(b) {
+		return fmt.Errorf("connect-ip: IPv4 total length (%d) doesn't match packet size (%d)", l, len(b))
+	}
+	return nil
+}
