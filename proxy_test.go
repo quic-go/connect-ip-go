@@ -161,6 +161,12 @@ func TestTTLs(t *testing.T) {
 		require.NoError(t, server.AdvertiseRoute([]IPRoute{
 			{StartIP: netip.MustParseAddr("0.0.0.0"), EndIP: netip.MustParseAddr("255.255.255.255")},
 		}))
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_, err := client.ReceiveAddressAssignment(ctx)
+		require.NoError(t, err)
+		_, err = client.Routes(ctx)
+		require.NoError(t, err)
 
 		// First send a packet with TTL 1.
 		// We expect the packet to be dropped silently.
@@ -203,6 +209,12 @@ func TestTTLs(t *testing.T) {
 		require.NoError(t, server.AdvertiseRoute([]IPRoute{
 			{StartIP: netip.MustParseAddr("::"), EndIP: netip.MustParseAddr("ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff")},
 		}))
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_, err := client.ReceiveAddressAssignment(ctx)
+		require.NoError(t, err)
+		_, err = client.Routes(ctx)
+		require.NoError(t, err)
 
 		// First send a packet with Hop Limit 1.
 		// We expect the packet to be dropped silently.

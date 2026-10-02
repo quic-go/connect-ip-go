@@ -196,6 +196,10 @@ type IPRoute struct {
 
 func (r IPRoute) len() int { return 1 + r.StartIP.BitLen()/8 + r.EndIP.BitLen()/8 + 1 }
 
+func (r IPRoute) contains(addr netip.Addr) bool {
+	return r.StartIP.Compare(addr) <= 0 && addr.Compare(r.EndIP) <= 0
+}
+
 // Prefixes returns the prefixes that this IP address range covers.
 // Note that depending on the start and end addresses,
 // this conversion can result in a large number of prefixes.

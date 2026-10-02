@@ -295,6 +295,27 @@ func TestPREF64Configuration(t *testing.T) {
 	})
 }
 
+func TestEmptyAddressAssignment(t *testing.T) {
+	for name, prefixes := range map[string][]netip.Prefix{"nil": nil, "empty": {}} {
+		t.Run(name, func(t *testing.T) {
+			readChan := make(chan []byte)
+			defer close(readChan)
+			conn := newProxiedConn(&mockStream{toRead: readChan}, nil)
+			defer conn.Close()
+			require.NoError(t, conn.AdvertiseRoute([]IPRoute{
+				{StartIP: netip.MustParseAddr("::"), EndIP: netip.MustParseAddr("ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff")},
+			}))
+			require.NoError(t, conn.handleIncomingProxiedPacket(ipv6Header))
+
+			require.NoError(t, conn.AssignAddresses([]netip.Prefix{netip.MustParsePrefix("2001:db8::1/128")}))
+			require.NoError(t, conn.handleIncomingProxiedPacket(ipv6Header))
+
+			require.NoError(t, conn.AssignAddresses(prefixes))
+			require.ErrorContains(t, conn.handleIncomingProxiedPacket(ipv6Header), "source address not allowed: 2001:db8::1")
+		})
+	}
+}
+
 func TestIncomingDatagrams(t *testing.T) {
 	t.Run("empty packets", func(t *testing.T) {
 		conn := newProxiedConn(&mockStream{}, nil)
@@ -325,7 +346,7 @@ func TestIncomingDatagrams(t *testing.T) {
 		require.NoError(t, err)
 		require.ErrorContains(t,
 			conn.handleIncomingProxiedPacket(data[:ipv4.HeaderLen-1]),
-			"connect-ip: malformed datagram: too short",
+			"connect-ip: IPv4 packet too short",
 		)
 	})
 
@@ -333,7 +354,7 @@ func TestIncomingDatagrams(t *testing.T) {
 		conn := newProxiedConn(&mockStream{}, nil)
 		require.ErrorContains(t,
 			conn.handleIncomingProxiedPacket(ipv6Header[:ipv6.HeaderLen-1]),
-			"connect-ip: malformed datagram: too short",
+			"connect-ip: IPv6 packet too short",
 		)
 	})
 
@@ -547,6 +568,12 @@ func FuzzIncomingDatagram(f *testing.F) {
 }
 
 func TestSendingDatagrams(t *testing.T) {
+	t.Run("empty packet", func(t *testing.T) {
+		conn := newProxiedConn(&mockStream{}, nil)
+		_, err := conn.composeDatagram([]byte{})
+		require.ErrorContains(t, err, "connect-ip: empty packet")
+	})
+
 	t.Run("invalid IP version", func(t *testing.T) {
 		conn := newProxiedConn(&mockStream{}, nil)
 		data := make([]byte, 20)
@@ -599,6 +626,7 @@ func TestSendingDatagrams(t *testing.T) {
 
 	t.Run("IPv4 header with options", func(t *testing.T) {
 		conn := newProxiedConn(&mockStream{}, nil)
+		require.NoError(t, conn.AssignAddresses([]netip.Prefix{netip.MustParsePrefix("159.70.42.98/32")}))
 		data := marshalIPv4Header(t, &ipv4.Header{
 			Src:     net.IPv4(1, 2, 3, 4),
 			Dst:     net.IPv4(159, 70, 42, 98),
@@ -626,11 +654,99 @@ func TestSendingDatagrams(t *testing.T) {
 		_, err = conn.composeDatagram(append(composeIPv6Packet(17), make([]byte, 8)...))
 		require.ErrorContains(t, err, "connect-ip: IPv6 payload length (0) doesn't match packet size (8)")
 	})
+
+	t.Run("source address", func(t *testing.T) {
+		readChan := make(chan []byte)
+		defer close(readChan)
+
+		data := (&addressAssignCapsule{
+			AssignedAddresses: []AssignedAddress{{IPPrefix: netip.MustParsePrefix("192.168.0.10/32")}},
+		}).append(nil)
+		conn := newProxiedConn(&mockStream{reading: data, toRead: readChan}, nil)
+		defer conn.Close()
+
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_, err := conn.ReceiveAddressAssignment(ctx)
+		require.NoError(t, err)
+		require.NoError(t, conn.AssignAddresses([]netip.Prefix{netip.MustParsePrefix("10.1.2.3/32")}))
+
+		hdr := &ipv4.Header{
+			Src:      net.IPv4(192, 168, 0, 10),
+			Dst:      net.IPv4(10, 1, 2, 3),
+			Protocol: 42,
+			Len:      20,
+			TTL:      64,
+		}
+		_, err = conn.composeDatagram(marshalIPv4Header(t, hdr))
+		require.NoError(t, err)
+
+		hdr.Src = net.IPv4(192, 168, 0, 11)
+		packet := marshalIPv4Header(t, hdr)
+		orig := bytes.Clone(packet)
+		_, err = conn.composeDatagram(packet)
+		require.ErrorContains(t, err, "source address not allowed: 192.168.0.11")
+		require.Equal(t, orig, packet)
+
+		// Advertising the source's network allows forwarding, regardless of protocol.
+		require.NoError(t, conn.AdvertiseRoute([]IPRoute{
+			{StartIP: netip.MustParseAddr("192.168.0.0"), EndIP: netip.MustParseAddr("192.168.0.255"), IPProtocol: 6},
+		}))
+		_, err = conn.composeDatagram(packet)
+		require.NoError(t, err)
+	})
+
+	t.Run("destination address and protocol", func(t *testing.T) {
+		readChan := make(chan []byte)
+		defer close(readChan)
+		data := (&routeAdvertisementCapsule{IPAddressRanges: []IPRoute{
+			{StartIP: netip.MustParseAddr("10.0.0.0"), EndIP: netip.MustParseAddr("10.1.2.3"), IPProtocol: 42},
+		}}).append(nil)
+		conn := newProxiedConn(&mockStream{reading: data, toRead: readChan}, nil)
+		defer conn.Close()
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_, err := conn.Routes(ctx)
+		require.NoError(t, err)
+
+		hdr := &ipv4.Header{
+			Src:      net.IPv4(192, 168, 0, 10),
+			Dst:      net.IPv4(10, 1, 2, 3),
+			Protocol: 42,
+			Len:      20,
+			TTL:      64,
+		}
+		_, err = conn.composeDatagram(marshalIPv4Header(t, hdr))
+		require.NoError(t, err)
+
+		hdr.Dst = net.IPv4(10, 1, 2, 4)
+		packet := marshalIPv4Header(t, hdr)
+		orig := bytes.Clone(packet)
+		_, err = conn.composeDatagram(packet)
+		require.ErrorContains(t, err, "not allowed: 10.1.2.4 (protocol: 42)")
+		require.Equal(t, orig, packet)
+
+		hdr.Dst = net.IPv4(10, 1, 2, 3)
+		hdr.Protocol = 41
+		packet = marshalIPv4Header(t, hdr)
+		orig = bytes.Clone(packet)
+		_, err = conn.composeDatagram(packet)
+		require.ErrorContains(t, err, "not allowed: 10.1.2.3 (protocol: 41)")
+		require.Equal(t, orig, packet)
+
+		// An address assigned to the peer is reachable for any protocol.
+		require.NoError(t, conn.AssignAddresses([]netip.Prefix{netip.MustParsePrefix("172.16.0.1/32")}))
+		hdr.Dst = net.IPv4(172, 16, 0, 1)
+		_, err = conn.composeDatagram(marshalIPv4Header(t, hdr))
+		require.NoError(t, err)
+	})
 }
 
 func TestSendLargeDatagrams(t *testing.T) {
 	str := &mockStream{sendDatagramErr: &quic.DatagramTooLargeError{}}
 	conn := newProxiedConn(str, nil)
+	// the peer didn't assign any addresses to us, so the source address isn't restricted
+	require.NoError(t, conn.AssignAddresses([]netip.Prefix{netip.MustParsePrefix("5.6.7.8/32")}))
 	data := marshalIPv4Header(t, &ipv4.Header{
 		Version:  4,
 		Len:      20,
