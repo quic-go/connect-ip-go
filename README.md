@@ -2,6 +2,7 @@
 
 [![PkgGoDev](https://pkg.go.dev/badge/github.com/quic-go/connect-ip-go)](https://pkg.go.dev/github.com/quic-go/connect-ip-go)
 [![Code Coverage](https://img.shields.io/codecov/c/github/quic-go/connect-ip-go/master.svg?style=flat-square)](https://codecov.io/gh/quic-go/connect-ip-go/)
+[![Fuzzing Status](https://oss-fuzz-build-logs.storage.googleapis.com/badges/connect-ip-go.svg)](https://issues.oss-fuzz.com/issues?q=connect-ip-go)
 
 connect-ip-go is an implementation of the CONNECT-IP protocol [RFC 9484](https://datatracker.ietf.org/doc/html/rfc9484), allowing the proxying of IP packets in HTTP/3.
 
