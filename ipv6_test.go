@@ -35,26 +35,38 @@ func composeIPv6Packet(nextHeaders ...uint8) []byte {
 }
 
 func TestIPv6UpperLayerProtocol(t *testing.T) {
+	fragment := composeIPv6Packet(ipProtoFragment, 17)
+	fragment[ipv6.HeaderLen+2] = 1 // Fragment Offset
+
 	for _, tt := range []struct {
-		name    string
-		packet  []byte
-		want    uint8
-		wantErr string
+		name        string
+		packet      []byte
+		want        uint8
+		wantPayload []byte
+		wantErr     string
 	}{
 		{
-			name:   "no extension headers",
-			packet: composeIPv6Packet(17),
-			want:   17,
+			name:        "no extension headers",
+			packet:      append(composeIPv6Packet(17), "foobar"...),
+			want:        17,
+			wantPayload: []byte("foobar"),
 		},
 		{
-			name:   "all extension headers",
-			packet: composeIPv6Packet(ipProtoHopByHop, ipProtoDestOpts, ipProtoRouting, ipProtoFragment, ipProtoAH, ipProtoDestOpts, 6),
-			want:   6,
+			name:        "all extension headers",
+			packet:      append(composeIPv6Packet(ipProtoHopByHop, ipProtoDestOpts, ipProtoRouting, ipProtoFragment, ipProtoAH, ipProtoDestOpts, 6), "foobar"...),
+			want:        6,
+			wantPayload: []byte("foobar"),
 		},
 		{
-			name:   "ESP",
-			packet: composeIPv6Packet(ipProtoDestOpts, 50),
-			want:   50,
+			name:        "ESP",
+			packet:      append(composeIPv6Packet(ipProtoDestOpts, 50), "foobar"...),
+			want:        50,
+			wantPayload: []byte("foobar"),
+		},
+		{
+			name:   "fragment at a non-zero offset",
+			packet: fragment,
+			want:   ipProtoFragment,
 		},
 		{
 			name:    "missing header",
@@ -73,13 +85,14 @@ func TestIPv6UpperLayerProtocol(t *testing.T) {
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			proto, err := ipv6UpperLayerProtocol(tt.packet)
+			proto, payload, err := ipv6UpperLayerProtocol(tt.packet)
 			if tt.wantErr != "" {
 				require.ErrorContains(t, err, tt.wantErr)
 				return
 			}
 			require.NoError(t, err)
 			require.Equal(t, tt.want, proto)
+			require.Equal(t, tt.wantPayload, payload)
 		})
 	}
 }

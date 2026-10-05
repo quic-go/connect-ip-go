@@ -535,15 +535,34 @@ func (c *Conn) handleIncomingProxiedPacket(data []byte) error {
 	assignedAddresses := c.assignedAddresses
 	localRoutes := c.localRoutes
 	peerAddresses := c.peerAddresses
+	peerRoutes := c.peerRoutes
 	c.mu.Unlock()
 
 	// We don't necessarily assign any addresses to the peer.
 	// For example, in the Remote Access VPN use case (RFC 9484, section 8.1),
 	// the client accepts incoming traffic from all IPs.
-	if peerAddresses != nil {
-		if !slices.ContainsFunc(peerAddresses, func(p netip.Prefix) bool { return p.Contains(src) }) {
+	if !isAllowedSource(src, peerAddresses, nil) {
+		// ICMP errors can originate from any router on the path (see Section 7.2.1 of RFC 9484).
+		// We accept them if we could have sent the packet that caused the error.
+		invoking, ok := icmpInvokingPacket(data, ipProto)
+		if !ok {
 			// TODO: send ICMP
 			return fmt.Errorf("connect-ip: datagram source address not allowed: %s", src)
+		}
+		invokingSrc, invokingDst, invokingProto, err := parseTruncatedIPHeader(invoking)
+		if err != nil {
+			return errors.New("connect-ip: malformed ICMP error message")
+		}
+		// ICMP errors are always sent to the source address of the packet that caused the error.
+		if invokingSrc != dst {
+			return fmt.Errorf("connect-ip: ICMP error sent to %s for a packet from %s", dst, invokingSrc)
+		}
+		if !isAllowedSource(invokingSrc, assignedAddresses, localRoutes) ||
+			!isAllowedDestination(invokingDst, invokingProto, peerAddresses, peerRoutes) {
+			return fmt.Errorf(
+				"connect-ip: ICMP error for a packet that couldn't have been sent through the tunnel: %s -> %s (protocol: %d)",
+				invokingSrc, invokingDst, invokingProto,
+			)
 		}
 	}
 
@@ -613,9 +632,28 @@ func (c *Conn) composeDatagram(b []byte) ([]byte, error) {
 	// 2. it is within one of the ranges assigned to us, or
 	// 3. it is within one of the ranges that we advertised to the peer (independent of the IP protocol),
 	//    since we're forwarding packets from these networks.
-	if assignedAddresses != nil &&
-		!slices.ContainsFunc(assignedAddresses, func(p netip.Prefix) bool { return p.Contains(src) }) &&
-		!slices.ContainsFunc(localRoutes, func(r IPRoute) bool { return r.contains(src) }) {
+	//
+	// ICMP errors can originate from any router on the path, so we don't check their source address.
+	// Instead, we check that we would have accepted the packet that caused the error from the peer.
+	// This prevents proxies from forwarding ICMP errors to the wrong client
+	// when clients share an address (see Section 11 of RFC 9484).
+	if invoking, ok := icmpInvokingPacket(b, ipProto); ok {
+		invokingSrc, invokingDst, invokingProto, err := parseTruncatedIPHeader(invoking)
+		if err != nil {
+			return nil, errors.New("connect-ip: malformed ICMP error message")
+		}
+		// ICMP errors are always sent to the source address of the packet that caused the error.
+		if invokingSrc != dst {
+			return nil, fmt.Errorf("connect-ip: ICMP error sent to %s for a packet from %s", dst, invokingSrc)
+		}
+		if !isAllowedSource(invokingSrc, peerAddresses, nil) ||
+			!isAllowedDestination(invokingDst, invokingProto, assignedAddresses, localRoutes) {
+			return nil, fmt.Errorf(
+				"connect-ip: ICMP error for a packet that couldn't have been received through the tunnel: %s -> %s (protocol: %d)",
+				invokingSrc, invokingDst, invokingProto,
+			)
+		}
+	} else if !isAllowedSource(src, assignedAddresses, localRoutes) {
 		return nil, fmt.Errorf("connect-ip: source address not allowed: %s", src)
 	}
 	// The destination IP address is valid if it
