@@ -512,6 +512,63 @@ func TestIncomingDatagrams(t *testing.T) {
 	})
 }
 
+func TestICMPErrors(t *testing.T) {
+	// the peer assigned 192.0.2.1 and 2001:db8::1 to us, and advertised routes for UDP
+	data := (&addressAssignCapsule{AssignedAddresses: []AssignedAddress{
+		{IPPrefix: netip.MustParsePrefix("192.0.2.1/32")},
+		{IPPrefix: netip.MustParsePrefix("2001:db8::1/128")},
+	}}).append(nil)
+	data = (&routeAdvertisementCapsule{IPAddressRanges: []IPRoute{
+		{StartIP: netip.MustParseAddr("198.51.100.0"), EndIP: netip.MustParseAddr("198.51.100.255"), IPProtocol: 17},
+		{StartIP: netip.MustParseAddr("2001:db8:85a3::"), EndIP: netip.MustParseAddr("2001:db8:85a3:ffff:ffff:ffff:ffff:ffff"), IPProtocol: 17},
+	}}).append(data)
+	conn := newProxiedConn(&mockStream{reading: data}, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_, err := conn.Routes(ctx) // wait until both capsules have been processed
+	require.NoError(t, err)
+	// we assigned 192.0.2.2 to the peer
+	require.NoError(t, conn.AssignAddresses([]netip.Prefix{netip.MustParsePrefix("192.0.2.2/32")}))
+
+	// icmpError composes an ICMP error for a large UDP packet, sent by the destination of that packet.
+	// The ICMP error only quotes the beginning of the packet.
+	icmpError := func(src, dst net.IP) []byte {
+		packet := append(marshalIPv4Header(t, &ipv4.Header{Len: ipv4.HeaderLen, TTL: 64, Protocol: 17, Src: src, Dst: dst}), make([]byte, 1480)...)
+		binary.BigEndian.PutUint16(packet[2:4], uint16(len(packet)))
+		binary.BigEndian.PutUint16(packet[10:12], calculateIPv4Checksum(packet[:ipv4.HeaderLen]))
+		icmp, err := composeICMPTooLargePacket(packet, 1280)
+		require.NoError(t, err)
+		return icmp
+	}
+
+	t.Run("receiving", func(t *testing.T) {
+		require.NoError(t, conn.handleIncomingProxiedPacket(icmpError(net.IPv4(192, 0, 2, 1), net.IPv4(198, 51, 100, 7))))
+		require.ErrorContains(t,
+			conn.handleIncomingProxiedPacket(icmpError(net.IPv4(192, 0, 2, 1), net.IPv4(8, 8, 8, 8))),
+			"couldn't have been sent through the tunnel: 192.0.2.1 -> 8.8.8.8 (protocol: 17)",
+		)
+		// only ICMP errors are accepted from other source addresses
+		echoReply := icmpError(net.IPv4(192, 0, 2, 1), net.IPv4(198, 51, 100, 7))
+		echoReply[ipv4.HeaderLen] = byte(ipv4.ICMPTypeEchoReply)
+		require.ErrorContains(t, conn.handleIncomingProxiedPacket(echoReply), "source address not allowed: 198.51.100.7")
+
+		// Packet Too Big for a packet from 2001:db8::1 to 2001:db8:85a3:8d3:1319:8a2e:370:7348
+		packet := append(composeIPv6Packet(17), make([]byte, 1460)...)
+		binary.BigEndian.PutUint16(packet[4:6], 1460)
+		icmp, err := composeICMPTooLargePacket(packet, 1280)
+		require.NoError(t, err)
+		require.NoError(t, conn.handleIncomingProxiedPacket(icmp))
+	})
+
+	t.Run("sending", func(t *testing.T) {
+		_, err := conn.composeDatagram(icmpError(net.IPv4(192, 0, 2, 2), net.IPv4(192, 0, 2, 1)))
+		require.NoError(t, err)
+		// we didn't assign 198.51.100.7 to the peer
+		_, err = conn.composeDatagram(icmpError(net.IPv4(198, 51, 100, 7), net.IPv4(192, 0, 2, 1)))
+		require.ErrorContains(t, err, "couldn't have been received through the tunnel: 198.51.100.7 -> 192.0.2.1 (protocol: 17)")
+	})
+}
+
 func TestSkipUnknownCapsule(t *testing.T) {
 	readChan := make(chan []byte, 1)
 	conn := newProxiedConn(&mockStream{toRead: readChan}, nil)
@@ -561,6 +618,11 @@ func FuzzIncomingDatagram(f *testing.F) {
 	corpus.Add(ipv4Header)
 	corpus.Add(ipv6Header)
 	corpus.Add(composeIPv6Packet(ipProtoHopByHop, ipProtoRouting, ipProtoFragment, ipProtoAH, ipProtoDestOpts, 42))
+	for _, packet := range [][]byte{ipv4Header, ipv6Header} {
+		icmp, err := composeICMPTooLargePacket(packet, 1280)
+		require.NoError(f, err)
+		corpus.Add(icmp)
+	}
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		conn.handleIncomingProxiedPacket(data)

@@ -10,6 +10,50 @@ import (
 	"golang.org/x/net/ipv6"
 )
 
+// icmpInvokingPacket returns the invoking packet of an ICMP error message, i.e. the packet that caused the error.
+// It returns false if b isn't an ICMP error message. b must have been accepted by parseIPHeader.
+//
+// The invoking packet is truncated if the ICMP error message would otherwise exceed 576 bytes
+// for IPv4 (Section 4.3.2.3 of RFC 1812), or the minimum MTU for IPv6 (Section 2.4 of RFC 4443).
+// It is empty if the ICMP header itself is truncated.
+func icmpInvokingPacket(b []byte, ipProto uint8) (invoking []byte, ok bool) {
+	var msg []byte
+	switch {
+	case ipVersion(b) == 4 && ipProto == ipProtoICMP:
+		// fragments at non-zero fragment offsets don't contain the ICMP header
+		if binary.BigEndian.Uint16(b[6:8])&0x1fff != 0 {
+			return nil, false
+		}
+		msg = b[int(b[0]&0x0f)*4:]
+		if len(msg) == 0 {
+			return nil, false
+		}
+		// Unlike ICMPv6, ICMPv4 doesn't reserve a range of message types for errors.
+		// Redirect and Source Quench messages also quote the packet that caused them,
+		// but we treat them like any other ICMP message: Redirects only apply to hosts
+		// on the same link as the router, and Source Quench is deprecated (see RFC 6633).
+		switch ipv4.ICMPType(msg[0]) {
+		case ipv4.ICMPTypeDestinationUnreachable, ipv4.ICMPTypeTimeExceeded, ipv4.ICMPTypeParameterProblem:
+		default:
+			return nil, false
+		}
+	case ipVersion(b) == 6 && ipProto == ipProtoICMPv6:
+		_, msg, _ = ipv6UpperLayerProtocol(b)
+		// ICMPv6 error messages have types from 0 to 127, see Section 2.1 of RFC 4443
+		if len(msg) == 0 || msg[0] >= 128 {
+			return nil, false
+		}
+	default:
+		return nil, false
+	}
+	// The invoking packet follows the 8 byte ICMP header.
+	// For ICMPv6, this also applies to unknown error message types, see Section 2.4 and Appendix A of RFC 4443.
+	if len(msg) < 8 {
+		return nil, true
+	}
+	return msg[8:], true
+}
+
 func composeICMPTooLargePacket(b []byte, mtu int) ([]byte, error) {
 	if len(b) == 0 {
 		return nil, errors.New("connect-ip: empty packet")

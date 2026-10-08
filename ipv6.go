@@ -31,37 +31,37 @@ func validateIPv6PayloadLength(b []byte) error {
 }
 
 // ipv6UpperLayerProtocol walks the extension header chain of an IPv6 packet
-// and returns the upper-layer protocol number.
+// and returns the upper-layer protocol number, as well as the payload starting with the upper-layer header.
 //
 // Only the extension headers listed in Section 4 of RFC 8200 are walked, except for ESP,
 // which encrypts everything following it. To keep the implementation simple, all other
 // extension headers are returned as the upper-layer protocol.
 //
 // Fragments at non-zero fragment offsets don't contain the upper-layer header.
-// For these, ipProtoFragment is returned.
-func ipv6UpperLayerProtocol(b []byte) (uint8, error) {
+// For these, ipProtoFragment and a nil payload are returned.
+func ipv6UpperLayerProtocol(b []byte) (uint8, []byte, error) {
 	next := b[6]
 	pos := ipv6.HeaderLen
 	for {
 		switch next {
 		case ipProtoHopByHop, ipProtoRouting, ipProtoFragment, ipProtoAH, ipProtoDestOpts:
 		default:
-			return next, nil
+			return next, b[pos:], nil
 		}
 		// the Hop-by-Hop Options header must immediately follow the IPv6 header
 		if next == ipProtoHopByHop && pos != ipv6.HeaderLen {
-			return 0, errors.New("connect-ip: malformed datagram: misplaced Hop-by-Hop Options header")
+			return 0, nil, errors.New("connect-ip: malformed datagram: misplaced Hop-by-Hop Options header")
 		}
 		// each of these headers is at least 8 bytes long
 		if len(b) < pos+8 {
-			return 0, errTruncatedExtensionHeader
+			return 0, nil, errTruncatedExtensionHeader
 		}
 		var hdrLen int
 		switch next {
 		case ipProtoFragment:
 			// the 13 bit fragment offset is non-zero for all but the first fragment
 			if binary.BigEndian.Uint16(b[pos+2:pos+4])>>3 != 0 {
-				return ipProtoFragment, nil
+				return ipProtoFragment, nil, nil
 			}
 			hdrLen = 8
 		case ipProtoAH:
@@ -72,7 +72,7 @@ func ipv6UpperLayerProtocol(b []byte) (uint8, error) {
 			hdrLen = (int(b[pos+1]) + 1) * 8
 		}
 		if len(b) < pos+hdrLen {
-			return 0, errTruncatedExtensionHeader
+			return 0, nil, errTruncatedExtensionHeader
 		}
 		next = b[pos]
 		pos += hdrLen
