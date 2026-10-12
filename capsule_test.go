@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	ossfuzzseeds "github.com/quic-go/go-ossfuzz-seeds"
 	"github.com/quic-go/quic-go/http3"
 	"github.com/quic-go/quic-go/quicvarint"
 	"golang.org/x/net/dns/dnsmessage"
@@ -942,5 +943,81 @@ func TestParsePREF64CapsuleInvalid(t *testing.T) {
 			_, err := parsePREF64Capsule(r)
 			return err
 		})
+	})
+}
+
+func FuzzCapsules(f *testing.F) {
+	corpus := ossfuzzseeds.New(f)
+	var stream []byte
+	for _, c := range []capsule{
+		&addressAssignCapsule{
+			AssignedAddresses: []AssignedAddress{
+				{RequestID: 1337, IPPrefix: netip.MustParsePrefix("1.2.3.0/24")},
+				{IPPrefix: netip.MustParsePrefix("2001:db8::/64")},
+			},
+		},
+		&addressRequestCapsule{
+			RequestIDs: []AddressRequestID{1, 2},
+			Prefixes:   []netip.Prefix{netip.MustParsePrefix("0.0.0.0/32"), netip.MustParsePrefix("2001:db8::/64")},
+		},
+		&routeAdvertisementCapsule{
+			IPAddressRanges: []IPRoute{
+				{StartIP: netip.MustParseAddr("10.0.0.0"), EndIP: netip.MustParseAddr("10.0.0.255")},
+				{StartIP: netip.MustParseAddr("2001:db8::"), EndIP: netip.MustParseAddr("2001:db8::ffff"), IPProtocol: 17},
+			},
+		},
+		&dnsAssignCapsule{
+			DNSConfigurations: []DNSConfiguration{{
+				Nameservers: []DNSNameserver{{
+					ServicePriority:          1,
+					IPv4Addresses:            []netip.Addr{netip.MustParseAddr("192.0.2.53")},
+					IPv6Addresses:            []netip.Addr{netip.MustParseAddr("2001:db8::53")},
+					AuthenticationDomainName: "masque.example.org.",
+					ServiceParameters: map[dnsmessage.SVCParamKey][]byte{
+						dnsmessage.SVCParamNoDefaultALPN: {},
+						dnsmessage.SVCParamALPN:          {2, 'h', '3'},
+					},
+				}},
+				InternalDomains: []string{"", "internal.example."},
+				SearchDomains:   []string{"XN--BCHER-KVA.example."},
+			}},
+		},
+		&pref64Capsule{Prefixes: []netip.Prefix{netip.MustParsePrefix("64:ff9b::/96")}},
+	} {
+		corpus.Add(c.append(nil))
+		stream = c.append(stream)
+	}
+	// all known capsule types in one stream, followed by a capsule of an unknown type
+	stream = quicvarint.Append(stream, 0x1337)
+	stream = quicvarint.Append(stream, 3)
+	stream = append(stream, "foo"...)
+	corpus.Add(stream)
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		p := http3.NewCapsuleParser(bytes.NewReader(data))
+		for {
+			typ, r, err := p.Next()
+			if err != nil {
+				return
+			}
+			c, err := parseCapsule(typ, r)
+			if err != nil {
+				return
+			}
+			if c == nil {
+				continue
+			}
+
+			// An accepted capsule must re-encode as exactly one capsule that parses to the same value.
+			p2 := http3.NewCapsuleParser(bytes.NewReader(c.append(nil)))
+			typ2, r2, err := p2.Next()
+			require.NoError(t, err)
+			require.Equal(t, typ, typ2)
+			parsed, err := parseCapsule(typ2, r2)
+			require.NoError(t, err)
+			require.Equal(t, c, parsed)
+			_, _, err = p2.Next()
+			require.ErrorIs(t, err, io.EOF)
+		}
 	})
 }
