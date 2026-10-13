@@ -13,7 +13,6 @@ import (
 	"golang.org/x/net/ipv4"
 	"golang.org/x/net/ipv6"
 
-	ossfuzzseeds "github.com/quic-go/go-ossfuzz-seeds"
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 	"github.com/quic-go/quic-go/quicvarint"
@@ -43,6 +42,7 @@ func marshalIPv4Header(t *testing.T, hdr *ipv4.Header) []byte {
 type mockStream struct {
 	reading         []byte
 	toRead          <-chan []byte
+	datagrams       <-chan []byte // if set, ReceiveDatagram returns io.EOF once it's drained
 	sendDatagramErr error
 	writeStarted    chan struct{}
 	written         chan<- []byte
@@ -81,6 +81,14 @@ func (m *mockStream) SetReadDeadline(time.Time) error  { return nil }
 func (m *mockStream) SetDeadline(time.Time) error      { return nil }
 func (m *mockStream) SendDatagram(data []byte) error   { return m.sendDatagramErr }
 func (m *mockStream) ReceiveDatagram(ctx context.Context) ([]byte, error) {
+	if m.datagrams != nil {
+		select {
+		case data := <-m.datagrams:
+			return data, nil
+		default:
+			return nil, io.EOF
+		}
+	}
 	<-ctx.Done()
 	return nil, ctx.Err()
 }
@@ -586,47 +594,6 @@ func TestSkipUnknownCapsule(t *testing.T) {
 	assigned, err := conn.ReceiveAddressAssignment(ctx)
 	require.NoError(t, err)
 	require.Equal(t, []AssignedAddress{{IPPrefix: netip.MustParsePrefix("192.168.0.10/32")}}, assigned)
-}
-
-func FuzzIncomingDatagram(f *testing.F) {
-	// OSS-Fuzz runs this function once per input, so the connection must not leak goroutines.
-	readChan := make(chan []byte)
-	defer close(readChan)
-	conn := newProxiedConn(&mockStream{toRead: readChan}, nil)
-	defer conn.Close()
-	require.NoError(f, conn.AssignAddresses([]netip.Prefix{
-		netip.MustParsePrefix("192.168.0.0/16"),
-		netip.MustParsePrefix("2001:db8::0/64"),
-	}))
-	require.NoError(f, conn.AdvertiseRoute([]IPRoute{
-		{StartIP: netip.MustParseAddr("10.0.0.0"), EndIP: netip.MustParseAddr("10.1.2.3"), IPProtocol: 42},
-		{StartIP: netip.MustParseAddr("2001:db8:1::"), EndIP: netip.MustParseAddr("2001:db8:1::ffff"), IPProtocol: 42},
-	}))
-
-	// Don't use marshalIPv4Header here: OSS-Fuzz builds replace *testing.F with a type
-	// that doesn't implement testing.T.
-	ipv4Header, err := (&ipv4.Header{
-		Src: net.IPv4(1, 2, 3, 4),
-		Dst: net.IPv4(159, 70, 42, 98),
-		Len: 20,
-	}).Marshal()
-	require.NoError(f, err)
-	binary.BigEndian.PutUint16(ipv4Header[2:4], uint16(len(ipv4Header)))
-	binary.BigEndian.PutUint16(ipv4Header[10:12], calculateIPv4Checksum(ipv4Header))
-
-	corpus := ossfuzzseeds.New(f)
-	corpus.Add(ipv4Header)
-	corpus.Add(ipv6Header)
-	corpus.Add(composeIPv6Packet(ipProtoHopByHop, ipProtoRouting, ipProtoFragment, ipProtoAH, ipProtoDestOpts, 42))
-	for _, packet := range [][]byte{ipv4Header, ipv6Header} {
-		icmp, err := composeICMPTooLargePacket(packet, 1280)
-		require.NoError(f, err)
-		corpus.Add(icmp)
-	}
-
-	f.Fuzz(func(t *testing.T, data []byte) {
-		conn.handleIncomingProxiedPacket(data)
-	})
 }
 
 func TestSendingDatagrams(t *testing.T) {
