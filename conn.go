@@ -414,12 +414,12 @@ func (c *Conn) readFromStream() error {
 		if err != nil {
 			return err
 		}
-		switch t {
-		case capsuleTypeAddressAssign:
-			capsule, err := parseAddressAssignCapsule(cr)
-			if err != nil {
-				return err
-			}
+		capsule, err := parseCapsule(t, cr)
+		if err != nil {
+			return err
+		}
+		switch capsule := capsule.(type) {
+		case *addressAssignCapsule:
 			prefixes := make([]netip.Prefix, 0, len(capsule.AssignedAddresses))
 			for _, assigned := range capsule.AssignedAddresses {
 				if !assigned.Rejected() {
@@ -434,42 +434,22 @@ func (c *Conn) readFromStream() error {
 			default:
 				return errors.New("connect-ip: address assignment queue full")
 			}
-		case capsuleTypeAddressRequest:
-			capsule, err := parseAddressRequestCapsule(cr)
-			if err != nil {
-				return err
-			}
+		case *addressRequestCapsule:
 			select {
 			case c.addressRequests <- capsule:
 			default:
 				return errors.New("connect-ip: address request queue full")
 			}
-		case capsuleTypeRouteAdvertisement:
-			capsule, err := parseRouteAdvertisementCapsule(cr)
-			if err != nil {
-				return err
-			}
+		case *routeAdvertisementCapsule:
 			// Store the routes first, so that WritePacket can send to them once Routes returns them.
 			c.mu.Lock()
 			c.peerRoutes = slices.Clone(capsule.IPAddressRanges)
 			c.mu.Unlock()
 			queueLatest(c.availableRouteUpdates, capsule.IPAddressRanges)
-		case capsuleTypeDNSAssign:
-			capsule, err := parseDNSAssignCapsule(cr)
-			if err != nil {
-				return err
-			}
+		case *dnsAssignCapsule:
 			queueLatest(c.dnsConfigurationUpdates, capsule.DNSConfigurations)
-		case capsuleTypePREF64:
-			capsule, err := parsePREF64Capsule(cr)
-			if err != nil {
-				return err
-			}
+		case *pref64Capsule:
 			queueLatest(c.pref64Updates, capsule.Prefixes)
-		default:
-			if err := cr.Discard(); err != nil {
-				return err
-			}
 		}
 	}
 }

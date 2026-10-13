@@ -30,6 +30,27 @@ const (
 	maxRoutesPerCapsule    = 8192
 )
 
+type capsule interface{ append([]byte) []byte }
+
+// parseCapsule parses a capsule of a type known to connect-ip-go.
+// Capsules of unknown types are skipped, as required by RFC 9297, and returned as nil.
+func parseCapsule(typ http3.CapsuleType, r http3.CapsuleReader) (capsule, error) {
+	switch typ {
+	case capsuleTypeAddressAssign:
+		return parseAddressAssignCapsule(r)
+	case capsuleTypeAddressRequest:
+		return parseAddressRequestCapsule(r)
+	case capsuleTypeRouteAdvertisement:
+		return parseRouteAdvertisementCapsule(r)
+	case capsuleTypeDNSAssign:
+		return parseDNSAssignCapsule(r)
+	case capsuleTypePREF64:
+		return parsePREF64Capsule(r)
+	default:
+		return nil, r.Discard()
+	}
+}
+
 // addressAssignCapsule represents an ADDRESS_ASSIGN capsule
 type addressAssignCapsule struct {
 	AssignedAddresses []AssignedAddress
