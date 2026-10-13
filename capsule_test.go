@@ -962,7 +962,7 @@ func FuzzCapsules(f *testing.F) {
 		},
 		&routeAdvertisementCapsule{
 			IPAddressRanges: []IPRoute{
-				{StartIP: netip.MustParseAddr("10.0.0.0"), EndIP: netip.MustParseAddr("10.0.0.255")},
+				{StartIP: netip.MustParseAddr("10.0.0.1"), EndIP: netip.MustParseAddr("10.0.2.254")},
 				{StartIP: netip.MustParseAddr("2001:db8::"), EndIP: netip.MustParseAddr("2001:db8::ffff"), IPProtocol: 17},
 			},
 		},
@@ -1018,6 +1018,34 @@ func FuzzCapsules(f *testing.F) {
 			require.Equal(t, c, parsed)
 			_, _, err = p2.Next()
 			require.ErrorIs(t, err, io.EOF)
+
+			switch c := c.(type) {
+			case *addressAssignCapsule:
+				for _, a := range c.AssignedAddresses {
+					_ = a.Rejected()
+				}
+			case *addressRequestCapsule:
+				require.Len(t, c.RequestIDs, len(c.Prefixes), "every requested prefix needs a request ID")
+			case *routeAdvertisementCapsule:
+				for _, r := range c.IPAddressRanges {
+					// checks that the prefixes returned by IPRoute.Prefixes exactly cover the route
+					prefixes := r.Prefixes()
+					require.NotEmpty(t, prefixes)
+					require.Equal(t, r.StartIP, prefixes[0].Addr(), "first prefix must start at the start of the range")
+					for i, p := range prefixes {
+						require.Equal(t, p.Masked(), p, "bits outside the prefix must be zero")
+						if i > 0 {
+							require.True(t, prefixes[i-1].Contains(p.Addr().Prev()), "gap between %s and %s", prefixes[i-1], p)
+							require.False(t, prefixes[i-1].Contains(p.Addr()), "%s overlaps with %s", prefixes[i-1], p)
+						}
+					}
+					last := prefixes[len(prefixes)-1]
+					require.True(t, last.Contains(r.EndIP), "last prefix must contain the end of the range")
+					if next := r.EndIP.Next(); next.IsValid() {
+						require.False(t, last.Contains(next), "last prefix must end at the end of the range")
+					}
+				}
+			}
 		}
 	})
 }
