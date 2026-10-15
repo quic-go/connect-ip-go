@@ -26,10 +26,10 @@ func TestDNSConfigurationDomainValidation(t *testing.T) {
 				Nameservers: []DNSNameserver{{
 					ServicePriority:          1,
 					IPv4Addresses:            []netip.Addr{netip.MustParseAddr("192.0.2.53")},
-					AuthenticationDomainName: "xn--bcher-kva.example.",
+					AuthenticationDomainName: "xn--bcher-kva.example",
 				}},
-				InternalDomains: []string{"xn--bcher-kva.internal.example."},
-				SearchDomains:   []string{"XN--BCHER-KVA.example."},
+				InternalDomains: []string{"xn--bcher-kva.internal.example"},
+				SearchDomains:   []string{"XN--BCHER-KVA.example"},
 			},
 		},
 		{
@@ -46,21 +46,21 @@ func TestDNSConfigurationDomainValidation(t *testing.T) {
 			name: "underscore label",
 			configuration: DNSConfiguration{
 				Nameservers:   nameservers,
-				SearchDomains: []string{"_msdcs.corp.example."},
+				SearchDomains: []string{"_msdcs.corp.example"},
 			},
 		},
 		{
-			name: "trailing root dot",
+			name: "single label",
 			configuration: DNSConfiguration{
 				Nameservers:   nameservers,
-				SearchDomains: []string{"example.com."},
+				SearchDomains: []string{"example"},
 			},
 		},
 		{
 			name: "authentication U-label",
 			configuration: DNSConfiguration{Nameservers: []DNSNameserver{{
 				ServicePriority:          1,
-				AuthenticationDomainName: "bücher.example.",
+				AuthenticationDomainName: "bücher.example",
 			}}},
 			err: "invalid authentication domain name: must use IDNA A-label form",
 		},
@@ -68,7 +68,7 @@ func TestDNSConfigurationDomainValidation(t *testing.T) {
 			name: "internal U-label",
 			configuration: DNSConfiguration{
 				Nameservers:     nameservers,
-				InternalDomains: []string{"bücher.example."},
+				InternalDomains: []string{"bücher.example"},
 			},
 			err: "invalid internal domain name: must use IDNA A-label form",
 		},
@@ -76,33 +76,41 @@ func TestDNSConfigurationDomainValidation(t *testing.T) {
 			name: "search U-label",
 			configuration: DNSConfiguration{
 				Nameservers:   nameservers,
-				SearchDomains: []string{"bücher.example."},
+				SearchDomains: []string{"bücher.example"},
 			},
 			err: "invalid search domain name: must use IDNA A-label form",
 		},
 		{
-			name: "authentication domain must be an FQDN",
+			name: "authentication domain with trailing root dot",
 			configuration: DNSConfiguration{Nameservers: []DNSNameserver{{
 				ServicePriority:          1,
-				AuthenticationDomainName: "resolver.example",
+				AuthenticationDomainName: "resolver.example.",
 			}}},
-			err: "invalid authentication domain name: must be an FQDN",
+			err: "invalid authentication domain name: must omit the trailing root dot",
 		},
 		{
-			name: "internal domain must be an FQDN",
+			name: "internal domain with trailing root dot",
 			configuration: DNSConfiguration{
 				Nameservers:     nameservers,
-				InternalDomains: []string{"internal.example"},
+				InternalDomains: []string{"internal.example."},
 			},
-			err: "invalid internal domain name: must be an FQDN",
+			err: "invalid internal domain name: must omit the trailing root dot",
 		},
 		{
-			name: "search domain must be an FQDN",
+			name: "internal domain set to the root dot",
+			configuration: DNSConfiguration{
+				Nameservers:     nameservers,
+				InternalDomains: []string{"."},
+			},
+			err: "invalid internal domain name: must omit the trailing root dot",
+		},
+		{
+			name: "search domain with trailing root dot",
 			configuration: DNSConfiguration{
 				Nameservers:   nameservers,
-				SearchDomains: []string{"example"},
+				SearchDomains: []string{"example."},
 			},
-			err: "invalid search domain name: must be an FQDN",
+			err: "invalid search domain name: must omit the trailing root dot",
 		},
 		{
 			name: "empty search domain",
@@ -116,7 +124,7 @@ func TestDNSConfigurationDomainValidation(t *testing.T) {
 			name: "invalid A-label",
 			configuration: DNSConfiguration{
 				Nameservers:   nameservers,
-				SearchDomains: []string{"xn--.example."},
+				SearchDomains: []string{"xn--.example"},
 			},
 			err: "invalid search domain name: must be a valid IDNA A-label",
 		},
@@ -124,7 +132,7 @@ func TestDNSConfigurationDomainValidation(t *testing.T) {
 			name: "leading hyphen",
 			configuration: DNSConfiguration{
 				Nameservers:   nameservers,
-				SearchDomains: []string{"-resolver.example."},
+				SearchDomains: []string{"-resolver.example"},
 			},
 			err: "invalid search domain name: must be a valid IDNA A-label",
 		},
@@ -132,7 +140,7 @@ func TestDNSConfigurationDomainValidation(t *testing.T) {
 			name: "label too long",
 			configuration: DNSConfiguration{
 				Nameservers:   nameservers,
-				SearchDomains: []string{strings.Repeat("a", 64) + ".example."},
+				SearchDomains: []string{strings.Repeat("a", 64) + ".example"},
 			},
 			err: "invalid search domain name: must be a valid IDNA A-label",
 		},
@@ -221,7 +229,7 @@ func TestDNSConfigurationValidServiceParameters(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			configuration := DNSConfiguration{Nameservers: []DNSNameserver{{
 				ServicePriority:          1,
-				AuthenticationDomainName: "resolver.example.",
+				AuthenticationDomainName: "resolver.example",
 				ServiceParameters:        test.serviceParameters,
 			}}}
 			require.NoError(t, configuration.validate())
@@ -240,7 +248,7 @@ func TestDNSConfigurationInvalidServiceParameters(t *testing.T) {
 	}{
 		{
 			name:                     "parameters too long",
-			authenticationDomainName: "resolver.example.",
+			authenticationDomainName: "resolver.example",
 			serviceParameters: map[dnsmessage.SVCParamKey][]byte{
 				dnsmessage.SVCParamPort: make([]byte, maxServiceParametersLen),
 			},
@@ -248,13 +256,13 @@ func TestDNSConfigurationInvalidServiceParameters(t *testing.T) {
 		},
 		{
 			name:                     "IPv4 hint",
-			authenticationDomainName: "resolver.example.",
+			authenticationDomainName: "resolver.example",
 			serviceParameters:        map[dnsmessage.SVCParamKey][]byte{dnsmessage.SVCParamIPv4Hint: nil},
 			err:                      "service parameter IPv4Hint is not allowed",
 		},
 		{
 			name:                     "IPv6 hint",
-			authenticationDomainName: "resolver.example.",
+			authenticationDomainName: "resolver.example",
 			serviceParameters:        map[dnsmessage.SVCParamKey][]byte{dnsmessage.SVCParamIPv6Hint: nil},
 			err:                      "service parameter IPv6Hint is not allowed",
 		},
@@ -266,7 +274,7 @@ func TestDNSConfigurationInvalidServiceParameters(t *testing.T) {
 		},
 		{
 			name:                     "unencrypted DNS without an address",
-			authenticationDomainName: "resolver.example.",
+			authenticationDomainName: "resolver.example",
 			err:                      "nameserver must have an address when no-default-alpn is omitted",
 		},
 	}

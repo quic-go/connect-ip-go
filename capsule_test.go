@@ -591,15 +591,15 @@ func TestParseDNSAssignCapsule(t *testing.T) {
 	payload = append(payload, netip.MustParseAddr("192.0.2.33").AsSlice()...)
 	payload = quicvarint.Append(payload, 1) // IPv6 Address Count
 	payload = append(payload, netip.MustParseAddr("2001:db8::1").AsSlice()...)
-	payload = appendDomain(payload, "resolver.example.")
+	payload = appendDomain(payload, "resolver.example")
 	serviceParametersBytes := []byte{0, 3, 0, 2, 0x21, 0x35} // port=853
 	payload = quicvarint.Append(payload, uint64(len(serviceParametersBytes)))
 	payload = append(payload, serviceParametersBytes...)
 	payload = quicvarint.Append(payload, 1) // Internal Domain Count
-	payload = appendDomain(payload, "internal.example.")
+	payload = appendDomain(payload, "internal.example")
 	payload = quicvarint.Append(payload, 2) // Search Domain Count
-	payload = appendDomain(payload, "internal.example.")
-	payload = appendDomain(payload, "example.")
+	payload = appendDomain(payload, "internal.example")
+	payload = appendDomain(payload, "example")
 
 	// A DNS_ASSIGN capsule can carry another configuration for a different
 	// internal domain.
@@ -611,7 +611,7 @@ func TestParseDNSAssignCapsule(t *testing.T) {
 	payload = appendDomain(payload, "")
 	payload = quicvarint.Append(payload, 0) // Service Parameters Length
 	payload = quicvarint.Append(payload, 1)
-	payload = appendDomain(payload, "other.example.")
+	payload = appendDomain(payload, "other.example")
 	payload = quicvarint.Append(payload, 0)
 
 	capsule, err := parseDNSAssignCapsule(newCapsuleReader(t, capsuleTypeDNSAssign, payload))
@@ -623,13 +623,13 @@ func TestParseDNSAssignCapsule(t *testing.T) {
 					ServicePriority:          42,
 					IPv4Addresses:            []netip.Addr{netip.MustParseAddr("192.0.2.33")},
 					IPv6Addresses:            []netip.Addr{netip.MustParseAddr("2001:db8::1")},
-					AuthenticationDomainName: "resolver.example.",
+					AuthenticationDomainName: "resolver.example",
 					ServiceParameters: map[dnsmessage.SVCParamKey][]byte{
 						dnsmessage.SVCParamPort: {0x21, 0x35},
 					},
 				}},
-				InternalDomains: []string{"internal.example."},
-				SearchDomains:   []string{"internal.example.", "example."},
+				InternalDomains: []string{"internal.example"},
+				SearchDomains:   []string{"internal.example", "example"},
 			},
 			{
 				Nameservers: []DNSNameserver{{
@@ -637,7 +637,7 @@ func TestParseDNSAssignCapsule(t *testing.T) {
 					IPv4Addresses:            []netip.Addr{netip.MustParseAddr("198.51.100.53")},
 					AuthenticationDomainName: "",
 				}},
-				InternalDomains: []string{"other.example."},
+				InternalDomains: []string{"other.example"},
 			},
 		},
 	}, capsule)
@@ -648,7 +648,7 @@ func TestWriteDNSAssignCapsule(t *testing.T) {
 		{
 			Nameservers: []DNSNameserver{{
 				ServicePriority:          1,
-				AuthenticationDomainName: "masque.example.org.",
+				AuthenticationDomainName: "masque.example.org",
 				ServiceParameters: map[dnsmessage.SVCParamKey][]byte{
 					dnsmessage.SVCParamNoDefaultALPN: {},
 					dnsmessage.SVCParamALPN:          {2, 'h', '3'},
@@ -661,8 +661,8 @@ func TestWriteDNSAssignCapsule(t *testing.T) {
 				ServicePriority: 2,
 				IPv4Addresses:   []netip.Addr{netip.MustParseAddr("192.0.2.53")},
 			}},
-			InternalDomains: []string{"internal.example."},
-			SearchDomains:   []string{"internal.example.", "XN--BCHER-KVA.example."},
+			InternalDomains: []string{"internal.example"},
+			SearchDomains:   []string{"internal.example", "XN--BCHER-KVA.example"},
 		},
 	}}
 
@@ -680,7 +680,7 @@ func TestWriteDNSAssignCapsuleSortsServiceParameters(t *testing.T) {
 	capsule := &dnsAssignCapsule{DNSConfigurations: []DNSConfiguration{{
 		Nameservers: []DNSNameserver{{
 			ServicePriority:          1,
-			AuthenticationDomainName: "resolver.example.",
+			AuthenticationDomainName: "resolver.example",
 			ServiceParameters: map[dnsmessage.SVCParamKey][]byte{
 				dnsmessage.SVCParamPort:          {0, 53},
 				dnsmessage.SVCParamNoDefaultALPN: {},
@@ -693,7 +693,7 @@ func TestWriteDNSAssignCapsuleSortsServiceParameters(t *testing.T) {
 	payload = binary.BigEndian.AppendUint16(payload, 1)
 	payload = quicvarint.Append(payload, 0) // IPv4 Address Count
 	payload = quicvarint.Append(payload, 0) // IPv6 Address Count
-	payload = appendDomain(payload, "resolver.example.")
+	payload = appendDomain(payload, "resolver.example")
 	payload = quicvarint.Append(payload, 17) // Service Parameters Length
 	payload = append(payload, 0, 1, 0, 3, 2, 'h', '3')
 	payload = append(payload, 0, 2, 0, 0)
@@ -732,7 +732,7 @@ func TestParseDNSAssignCapsuleInvalid(t *testing.T) {
 	t.Run("zero nameserver count", func(t *testing.T) {
 		payload := quicvarint.Append(nil, 0) // Nameserver Count
 		payload = quicvarint.Append(payload, 1)
-		payload = appendDomain(payload, "internal.example.")
+		payload = appendDomain(payload, "internal.example")
 		payload = quicvarint.Append(payload, 0)
 
 		_, err := parseDNSAssignCapsule(newCapsuleReader(t, capsuleTypeDNSAssign, payload))
@@ -767,7 +767,7 @@ func TestParseDNSAssignCapsuleInvalid(t *testing.T) {
 		payload = appendDomain(payload, "")
 		payload = quicvarint.Append(payload, 0) // Service Parameters Length
 		payload = quicvarint.Append(payload, 1)
-		payload = appendDomain(payload, "bücher.example.")
+		payload = appendDomain(payload, "bücher.example")
 		payload = quicvarint.Append(payload, 0)
 
 		_, err := parseDNSAssignCapsule(newCapsuleReader(t, capsuleTypeDNSAssign, payload))
@@ -806,7 +806,7 @@ func TestParseDNSAssignCapsuleInvalid(t *testing.T) {
 		payload = binary.BigEndian.AppendUint16(payload, 1)
 		payload = quicvarint.Append(payload, 0) // IPv4 Address Count
 		payload = quicvarint.Append(payload, 0) // IPv6 Address Count
-		payload = appendDomain(payload, "resolver.example.")
+		payload = appendDomain(payload, "resolver.example")
 		payload = quicvarint.Append(payload, 5)
 		payload = append(payload, 0, 3, 0, 2, 0x21)
 		payload = quicvarint.Append(payload, 0)
@@ -821,7 +821,7 @@ func TestParseDNSAssignCapsuleInvalid(t *testing.T) {
 		payload = binary.BigEndian.AppendUint16(payload, 1)
 		payload = quicvarint.Append(payload, 0) // IPv4 Address Count
 		payload = quicvarint.Append(payload, 0) // IPv6 Address Count
-		payload = appendDomain(payload, "resolver.example.")
+		payload = appendDomain(payload, "resolver.example")
 		payload = quicvarint.Append(payload, 8)
 		payload = append(payload, 0, 3, 0, 0, 0, 1, 0, 0)
 		payload = quicvarint.Append(payload, 0)
@@ -836,7 +836,7 @@ func TestParseDNSAssignCapsuleInvalid(t *testing.T) {
 		payload = binary.BigEndian.AppendUint16(payload, 1)
 		payload = quicvarint.Append(payload, 0) // IPv4 Address Count
 		payload = quicvarint.Append(payload, 0) // IPv6 Address Count
-		payload = appendDomain(payload, "resolver.example.")
+		payload = appendDomain(payload, "resolver.example")
 		payload = quicvarint.Append(payload, 8)
 		payload = append(payload, 0, 3, 0, 0, 0, 3, 0, 0)
 		payload = quicvarint.Append(payload, 0)
@@ -853,20 +853,20 @@ func TestParseDNSAssignCapsuleInvalid(t *testing.T) {
 					ServicePriority:          1,
 					IPv4Addresses:            []netip.Addr{netip.MustParseAddr("192.0.2.53")},
 					IPv6Addresses:            []netip.Addr{netip.MustParseAddr("2001:db8::53")},
-					AuthenticationDomainName: "resolver.example.",
+					AuthenticationDomainName: "resolver.example",
 					ServiceParameters: map[dnsmessage.SVCParamKey][]byte{
 						dnsmessage.SVCParamPort: {0x21, 0x35},
 					},
 				}},
-				InternalDomains: []string{"internal.example."},
-				SearchDomains:   []string{"internal.example.", "example."},
+				InternalDomains: []string{"internal.example"},
+				SearchDomains:   []string{"internal.example", "example"},
 			},
 			{
 				Nameservers: []DNSNameserver{{
 					ServicePriority: 2,
 					IPv4Addresses:   []netip.Addr{netip.MustParseAddr("198.51.100.53")},
 				}},
-				InternalDomains: []string{"other.example."},
+				InternalDomains: []string{"other.example"},
 			},
 		}}).append(nil)
 
@@ -988,14 +988,14 @@ func FuzzCapsules(f *testing.F) {
 					ServicePriority:          1,
 					IPv4Addresses:            []netip.Addr{netip.MustParseAddr("192.0.2.53")},
 					IPv6Addresses:            []netip.Addr{netip.MustParseAddr("2001:db8::53")},
-					AuthenticationDomainName: "masque.example.org.",
+					AuthenticationDomainName: "masque.example.org",
 					ServiceParameters: map[dnsmessage.SVCParamKey][]byte{
 						dnsmessage.SVCParamNoDefaultALPN: {},
 						dnsmessage.SVCParamALPN:          {2, 'h', '3'},
 					},
 				}},
-				InternalDomains: []string{"", "internal.example."},
-				SearchDomains:   []string{"XN--BCHER-KVA.example."},
+				InternalDomains: []string{"", "internal.example"},
+				SearchDomains:   []string{"XN--BCHER-KVA.example"},
 			}},
 		},
 		&pref64Capsule{Prefixes: []netip.Prefix{netip.MustParsePrefix("64:ff9b::/96")}},
