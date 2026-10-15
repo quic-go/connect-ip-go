@@ -40,6 +40,7 @@ type DNSNameserver struct {
 // DNSConfiguration describes the DNS Configuration structure defined by
 // draft-ietf-masque-connect-ip-dns-06.
 type DNSConfiguration struct {
+	// Nameservers must not be empty.
 	Nameservers []DNSNameserver
 	// InternalDomains contains fully qualified domain names in DNS presentation
 	// format, including the terminating root dot, using IDNA A-labels. U-labels
@@ -85,6 +86,9 @@ func validateDomainName(name string, allowEmpty bool) error {
 }
 
 func (c DNSConfiguration) validate() error {
+	if len(c.Nameservers) == 0 {
+		return errors.New("nameserver count must not be zero")
+	}
 	for _, ns := range c.Nameservers {
 		if ns.ServicePriority == 0 {
 			return errors.New("service priority must not be zero")

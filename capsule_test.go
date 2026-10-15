@@ -729,6 +729,16 @@ func TestParseDNSAssignCapsuleInvalid(t *testing.T) {
 		require.ErrorContains(t, err, "service priority must not be zero")
 	})
 
+	t.Run("zero nameserver count", func(t *testing.T) {
+		payload := quicvarint.Append(nil, 0) // Nameserver Count
+		payload = quicvarint.Append(payload, 1)
+		payload = appendDomain(payload, "internal.example.")
+		payload = quicvarint.Append(payload, 0)
+
+		_, err := parseDNSAssignCapsule(newCapsuleReader(t, capsuleTypeDNSAssign, payload))
+		require.ErrorContains(t, err, "nameserver count must not be zero")
+	})
+
 	t.Run("truncated domain", func(t *testing.T) {
 		payload := quicvarint.Append(nil, 0) // Nameserver Count
 		payload = quicvarint.Append(payload, 1)
@@ -749,7 +759,13 @@ func TestParseDNSAssignCapsuleInvalid(t *testing.T) {
 	})
 
 	t.Run("domain must use A-label form", func(t *testing.T) {
-		payload := quicvarint.Append(nil, 0) // Nameserver Count
+		payload := quicvarint.Append(nil, 1) // Nameserver Count
+		payload = binary.BigEndian.AppendUint16(payload, 1)
+		payload = quicvarint.Append(payload, 1) // IPv4 Address Count
+		payload = append(payload, netip.MustParseAddr("192.0.2.53").AsSlice()...)
+		payload = quicvarint.Append(payload, 0) // IPv6 Address Count
+		payload = appendDomain(payload, "")
+		payload = quicvarint.Append(payload, 0) // Service Parameters Length
 		payload = quicvarint.Append(payload, 1)
 		payload = appendDomain(payload, "bücher.example.")
 		payload = quicvarint.Append(payload, 0)
