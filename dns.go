@@ -28,9 +28,8 @@ type DNSNameserver struct {
 	// Zone identifiers are local to an endpoint and are not part of the wire format.
 	IPv6Addresses []netip.Addr
 	// AuthenticationDomainName is the fully qualified domain name of the
-	// nameserver. It must be in DNS presentation format, including the terminating
-	// root dot, and use IDNA A-labels; U-labels are rejected. It may be empty only
-	// when the nameserver supports unencrypted DNS exclusively.
+	// nameserver, without the trailing root dot and using IDNA A-labels. It may be
+	// empty only when the nameserver supports unencrypted DNS exclusively.
 	AuthenticationDomainName string
 	// ServiceParameters is the set of SVCB parameters that apply to this nameserver.
 	// Each map value is the wire-format SvcParamValue for its key.
@@ -42,13 +41,11 @@ type DNSNameserver struct {
 type DNSConfiguration struct {
 	// Nameservers must not be empty.
 	Nameservers []DNSNameserver
-	// InternalDomains contains fully qualified domain names in DNS presentation
-	// format, including the terminating root dot, using IDNA A-labels. U-labels
-	// are rejected. An empty string represents the DNS root.
+	// InternalDomains contains fully qualified domain names, without the trailing
+	// root dot and using IDNA A-labels. An empty string represents the DNS root.
 	InternalDomains []string
-	// SearchDomains contains fully qualified domain names in DNS presentation
-	// format, including the terminating root dot, using IDNA A-labels. U-labels
-	// and empty strings are rejected.
+	// SearchDomains contains fully qualified domain names, without the trailing
+	// root dot and using IDNA A-labels.
 	SearchDomains []string
 }
 
@@ -71,9 +68,8 @@ func validateDomainName(name string, allowEmpty bool) error {
 			return errors.New("must use IDNA A-label form")
 		}
 	}
-	name, ok := strings.CutSuffix(name, ".")
-	if !ok {
-		return errors.New("must be an FQDN")
+	if strings.HasSuffix(name, ".") {
+		return errors.New("must omit the trailing root dot")
 	}
 	ascii, err := dnsNameProfile.ToASCII(name)
 	if err != nil {
