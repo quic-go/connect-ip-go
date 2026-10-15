@@ -10,6 +10,11 @@ import (
 )
 
 func TestDNSConfigurationDomainValidation(t *testing.T) {
+	nameservers := []DNSNameserver{{
+		ServicePriority: 1,
+		IPv4Addresses:   []netip.Addr{netip.MustParseAddr("192.0.2.53")},
+	}}
+
 	tests := []struct {
 		name          string
 		configuration DNSConfiguration
@@ -40,12 +45,14 @@ func TestDNSConfigurationDomainValidation(t *testing.T) {
 		{
 			name: "underscore label",
 			configuration: DNSConfiguration{
+				Nameservers:   nameservers,
 				SearchDomains: []string{"_msdcs.corp.example."},
 			},
 		},
 		{
 			name: "trailing root dot",
 			configuration: DNSConfiguration{
+				Nameservers:   nameservers,
 				SearchDomains: []string{"example.com."},
 			},
 		},
@@ -60,6 +67,7 @@ func TestDNSConfigurationDomainValidation(t *testing.T) {
 		{
 			name: "internal U-label",
 			configuration: DNSConfiguration{
+				Nameservers:     nameservers,
 				InternalDomains: []string{"bücher.example."},
 			},
 			err: "invalid internal domain name: must use IDNA A-label form",
@@ -67,6 +75,7 @@ func TestDNSConfigurationDomainValidation(t *testing.T) {
 		{
 			name: "search U-label",
 			configuration: DNSConfiguration{
+				Nameservers:   nameservers,
 				SearchDomains: []string{"bücher.example."},
 			},
 			err: "invalid search domain name: must use IDNA A-label form",
@@ -82,6 +91,7 @@ func TestDNSConfigurationDomainValidation(t *testing.T) {
 		{
 			name: "internal domain must be an FQDN",
 			configuration: DNSConfiguration{
+				Nameservers:     nameservers,
 				InternalDomains: []string{"internal.example"},
 			},
 			err: "invalid internal domain name: must be an FQDN",
@@ -89,6 +99,7 @@ func TestDNSConfigurationDomainValidation(t *testing.T) {
 		{
 			name: "search domain must be an FQDN",
 			configuration: DNSConfiguration{
+				Nameservers:   nameservers,
 				SearchDomains: []string{"example"},
 			},
 			err: "invalid search domain name: must be an FQDN",
@@ -96,6 +107,7 @@ func TestDNSConfigurationDomainValidation(t *testing.T) {
 		{
 			name: "empty search domain",
 			configuration: DNSConfiguration{
+				Nameservers:   nameservers,
 				SearchDomains: []string{""},
 			},
 			err: "invalid search domain name: must not be empty",
@@ -103,6 +115,7 @@ func TestDNSConfigurationDomainValidation(t *testing.T) {
 		{
 			name: "invalid A-label",
 			configuration: DNSConfiguration{
+				Nameservers:   nameservers,
 				SearchDomains: []string{"xn--.example."},
 			},
 			err: "invalid search domain name: must be a valid IDNA A-label",
@@ -110,6 +123,7 @@ func TestDNSConfigurationDomainValidation(t *testing.T) {
 		{
 			name: "leading hyphen",
 			configuration: DNSConfiguration{
+				Nameservers:   nameservers,
 				SearchDomains: []string{"-resolver.example."},
 			},
 			err: "invalid search domain name: must be a valid IDNA A-label",
@@ -117,6 +131,7 @@ func TestDNSConfigurationDomainValidation(t *testing.T) {
 		{
 			name: "label too long",
 			configuration: DNSConfiguration{
+				Nameservers:   nameservers,
 				SearchDomains: []string{strings.Repeat("a", 64) + ".example."},
 			},
 			err: "invalid search domain name: must be a valid IDNA A-label",

@@ -228,6 +228,10 @@ func TestDNSConfiguration(t *testing.T) {
 		require.ErrorContains(t,
 			conn.SendDNSConfiguration([]DNSConfiguration{
 				{
+					Nameservers: []DNSNameserver{{
+						ServicePriority: 1,
+						IPv4Addresses:   []netip.Addr{netip.MustParseAddr("192.0.2.53")},
+					}},
 					InternalDomains: []string{"bücher.example."},
 				},
 			}),
