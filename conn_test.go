@@ -15,6 +15,7 @@ import (
 
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
+	"github.com/quic-go/quic-go/qlogwriter"
 	"github.com/quic-go/quic-go/quicvarint"
 	"golang.org/x/net/dns/dnsmessage"
 
@@ -46,11 +47,13 @@ type mockStream struct {
 	sendDatagramErr error
 	writeStarted    chan struct{}
 	written         chan<- []byte
+	qlogTrace       qlogwriter.Trace
 }
 
 var _ http3Stream = &mockStream{}
 
-func (m *mockStream) StreamID() quic.StreamID { panic("implement me") }
+func (m *mockStream) StreamID() quic.StreamID     { return 0 }
+func (m *mockStream) QlogTrace() qlogwriter.Trace { return m.qlogTrace }
 func (m *mockStream) Read(p []byte) (int, error) {
 	if len(m.reading) == 0 {
 		var ok bool

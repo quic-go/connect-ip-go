@@ -10,7 +10,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
+	"github.com/quic-go/quic-go/qlogwriter"
 	"github.com/yosida95/uritemplate/v3"
 	"golang.org/x/net/ipv4"
 	"golang.org/x/net/ipv6"
@@ -19,6 +21,11 @@ import (
 )
 
 func setupConns(t *testing.T) (client, server *Conn) {
+	t.Helper()
+	return setupConnsWithTracers(t, nil, nil)
+}
+
+func setupConnsWithTracers(t *testing.T, clientTracer, serverTracer func(context.Context, bool, quic.ConnectionID) qlogwriter.Trace) (client, server *Conn) {
 	t.Helper()
 
 	p := &Proxy{}
@@ -43,6 +50,7 @@ func setupConns(t *testing.T) (client, server *Conn) {
 		Addr:            ":0",
 		EnableDatagrams: true,
 		TLSConfig:       tlsConf,
+		QUICConfig:      &quic.Config{Tracer: serverTracer},
 	}
 	go func() { s.Serve(conn) }()
 	t.Cleanup(func() { s.Close() })
@@ -54,6 +62,7 @@ func setupConns(t *testing.T) (client, server *Conn) {
 	req.Header().Set("Authorization", "Bearer token")
 	client, rsp, err := (&Transport{
 		TLSClientConfig: &tls.Config{ServerName: "localhost", RootCAs: certPool, NextProtos: []string{http3.NextProtoH3}},
+		QUICConfig:      &quic.Config{EnableDatagrams: true, InitialPacketSize: defaultInitialPacketSize, Tracer: clientTracer},
 	}).Dial(req)
 	require.NoError(t, err)
 	t.Cleanup(func() { client.Close() })
