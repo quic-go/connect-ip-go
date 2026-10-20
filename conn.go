@@ -74,11 +74,12 @@ type Conn struct {
 	peerRoutes           []IPRoute      // IP routes that the peer advertised to us
 	lastAddressRequestID AddressRequestID
 
-	closeChan chan struct{}
-	closeErr  error
+	ctx       context.Context // canceled when the connection is closed, with a *CloseError as the cause
+	ctxCancel context.CancelCauseFunc
 }
 
 func newProxiedConn(str http3Stream, closeConn func() error) *Conn {
+	ctx, ctxCancel := context.WithCancelCause(context.Background())
 	c := &Conn{
 		str:                     str,
 		closeConn:               closeConn,
@@ -89,7 +90,8 @@ func newProxiedConn(str http3Stream, closeConn func() error) *Conn {
 		availableRouteUpdates:   make(chan []IPRoute, 1),
 		dnsConfigurationUpdates: make(chan []DNSConfiguration, 1),
 		pref64Updates:           make(chan []netip.Prefix, 1),
-		closeChan:               make(chan struct{}),
+		ctx:                     ctx,
+		ctxCancel:               ctxCancel,
 	}
 	go func() {
 		err := c.readFromStream()
@@ -97,9 +99,8 @@ func newProxiedConn(str http3Stream, closeConn func() error) *Conn {
 			log.Printf("handling stream failed: %v", err)
 		}
 		c.mu.Lock()
-		if c.closeErr == nil {
-			c.closeErr = &CloseError{Remote: true}
-			close(c.closeChan)
+		if c.ctx.Err() == nil {
+			c.ctxCancel(&CloseError{Remote: true})
 			if err != nil {
 				// Abort without consuming the remaining capsule payload.
 				c.str.CancelRead(quic.StreamErrorCode(http3.ErrCodeExcessiveLoad))
@@ -116,9 +117,8 @@ func newProxiedConn(str http3Stream, closeConn func() error) *Conn {
 		if err != nil {
 			log.Printf("writing to stream failed: %v", err)
 			c.mu.Lock()
-			if c.closeErr == nil {
-				c.closeErr = &CloseError{Remote: true}
-				close(c.closeChan)
+			if c.ctx.Err() == nil {
+				c.ctxCancel(&CloseError{Remote: true})
 				c.str.CancelRead(quic.StreamErrorCode(http3.ErrCodeExcessiveLoad))
 				c.str.CancelWrite(quic.StreamErrorCode(http3.ErrCodeExcessiveLoad))
 			} else {
@@ -141,8 +141,7 @@ func (c *Conn) AdvertiseRoute(routes []IPRoute) error {
 	}
 
 	c.mu.Lock()
-	if c.closeErr != nil {
-		err := c.closeErr
+	if err := context.Cause(c.ctx); err != nil {
 		c.mu.Unlock()
 		return err
 	}
@@ -178,8 +177,7 @@ func (c *Conn) RequestAddresses(prefixes []netip.Prefix) ([]AddressRequestID, er
 	}
 
 	c.mu.Lock()
-	if c.closeErr != nil {
-		err := c.closeErr
+	if err := context.Cause(c.ctx); err != nil {
 		c.mu.Unlock()
 		return nil, err
 	}
@@ -209,13 +207,13 @@ func (c *Conn) ReceiveAddressAssignment(ctx context.Context) ([]AssignedAddress,
 		return nil, ctx.Err()
 	case assignment := <-c.assignedAddressUpdates:
 		return assignment, nil
-	case <-c.closeChan:
+	case <-c.ctx.Done():
 		// Deliver queued responses before reporting closure.
 		select {
 		case assignment := <-c.assignedAddressUpdates:
 			return assignment, nil
 		default:
-			return nil, c.closeErr
+			return nil, context.Cause(c.ctx)
 		}
 	}
 }
@@ -228,11 +226,11 @@ func (c *Conn) ReceiveAddressRequest(ctx context.Context) (*AddressRequest, erro
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	case requested = <-c.addressRequests:
-	case <-c.closeChan:
+	case <-c.ctx.Done():
 		select {
 		case requested = <-c.addressRequests:
 		default:
-			return nil, c.closeErr
+			return nil, context.Cause(c.ctx)
 		}
 	}
 	return newAddressRequest(c, requested), nil
@@ -259,8 +257,7 @@ func (c *Conn) sendAddressAssignment(capsule *addressAssignCapsule) error {
 	}
 
 	c.mu.Lock()
-	if c.closeErr != nil {
-		err := c.closeErr
+	if err := context.Cause(c.ctx); err != nil {
 		c.mu.Unlock()
 		return err
 	}
@@ -305,8 +302,8 @@ func (c *Conn) ReceiveDNSConfiguration(ctx context.Context) ([]DNSConfiguration,
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
-	case <-c.closeChan:
-		return nil, c.closeErr
+	case <-c.ctx.Done():
+		return nil, context.Cause(c.ctx)
 	case configurations := <-c.dnsConfigurationUpdates:
 		return configurations, nil
 	}
@@ -335,8 +332,8 @@ func (c *Conn) ReceivePREF64Configuration(ctx context.Context) ([]netip.Prefix, 
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
-	case <-c.closeChan:
-		return nil, c.closeErr
+	case <-c.ctx.Done():
+		return nil, context.Cause(c.ctx)
 	case prefixes := <-c.pref64Updates:
 		return prefixes, nil
 	}
@@ -344,8 +341,7 @@ func (c *Conn) ReceivePREF64Configuration(ctx context.Context) ([]netip.Prefix, 
 
 func (c *Conn) sendCapsule(capsuleData []byte) error {
 	c.mu.Lock()
-	if c.closeErr != nil {
-		err := c.closeErr
+	if err := context.Cause(c.ctx); err != nil {
 		c.mu.Unlock()
 		return err
 	}
@@ -363,8 +359,7 @@ func (c *Conn) queueWrite(w streamWrite) error {
 		// Interrupt pending capsule writes so shutdown cannot stall.
 		_ = c.str.SetWriteDeadline(time.Now())
 	} else if len(c.queuedWrites) >= maxQueuedCapsules {
-		c.closeErr = &CloseError{Remote: false}
-		close(c.closeChan)
+		c.ctxCancel(&CloseError{Remote: false})
 		c.str.CancelRead(quic.StreamErrorCode(http3.ErrCodeExcessiveLoad))
 		c.str.CancelWrite(quic.StreamErrorCode(http3.ErrCodeExcessiveLoad))
 		close(c.writeNotify)
@@ -397,8 +392,8 @@ func (c *Conn) Routes(ctx context.Context) ([]IPRoute, error) {
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
-	case <-c.closeChan:
-		return nil, c.closeErr
+	case <-c.ctx.Done():
+		return nil, context.Cause(c.ctx)
 	case routes := <-c.availableRouteUpdates:
 		return routes, nil
 	}
@@ -475,19 +470,14 @@ func (c *Conn) writeToStream() error {
 			}
 		}
 	}
-	return c.closeErr
+	return context.Cause(c.ctx)
 }
 
 func (c *Conn) ReadPacket(b []byte) (n int, err error) {
 start:
-	data, err := c.str.ReceiveDatagram(context.Background())
+	data, err := c.str.ReceiveDatagram(c.ctx)
 	if err != nil {
-		select {
-		case <-c.closeChan:
-			return 0, c.closeErr
-		default:
-			return 0, err
-		}
+		return 0, err
 	}
 	contextID, n, err := quicvarint.Parse(data)
 	if err != nil {
@@ -566,8 +556,8 @@ func (c *Conn) WritePacket(b []byte) (icmp []byte, err error) {
 	// The stream's send side is closed asynchronously,
 	// so it might still accept datagrams after the connection was closed.
 	select {
-	case <-c.closeChan:
-		return nil, c.closeErr
+	case <-c.ctx.Done():
+		return nil, context.Cause(c.ctx)
 	default:
 	}
 
@@ -585,8 +575,8 @@ func (c *Conn) WritePacket(b []byte) (icmp []byte, err error) {
 			return icmpPacket, nil
 		}
 		select {
-		case <-c.closeChan:
-			return nil, c.closeErr
+		case <-c.ctx.Done():
+			return nil, context.Cause(c.ctx)
 		default:
 			return nil, err
 		}
@@ -668,9 +658,8 @@ func (c *Conn) composeDatagram(b []byte) ([]byte, error) {
 
 func (c *Conn) Close() error {
 	c.mu.Lock()
-	if c.closeErr == nil {
-		c.closeErr = &CloseError{Remote: false}
-		close(c.closeChan)
+	if c.ctx.Err() == nil {
+		c.ctxCancel(&CloseError{Remote: false})
 		_ = c.queueWrite(streamWrite{Fin: true})
 	}
 	closeConn := c.closeConn
