@@ -138,3 +138,74 @@ func TestCapsuleParsedEvent(t *testing.T) {
 		}
 	}`, ev)
 }
+
+func TestPacketProcessedEvent(t *testing.T) {
+	name, ev := testEventEncoding(t, PacketProcessed{
+		StreamID: quic.StreamID(4),
+		Source:   EndpointApplication,
+		Packet: Packet{
+			Header: IPv6Header{
+				PayloadLength:      1408,
+				NextHeader:         0, // Hop-by-Hop Options
+				HopLimit:           64,
+				SourceAddress:      netip.MustParseAddr("2001:db8::1"),
+				DestinationAddress: netip.MustParseAddr("2001:db8::2"),
+			},
+			UpperLayerProtocol: new(uint8(17)),
+			Raw:                RawInfo{Length: 1448, PayloadLength: 1400},
+		},
+		Outcome: PacketDropped,
+		Reason:  PacketDropTooLarge,
+		ICMPResponse: &ICMPResponse{
+			To: EndpointApplication,
+			Packet: Packet{
+				Header: IPv6Header{
+					PayloadLength:      1240,
+					NextHeader:         58,
+					HopLimit:           64,
+					SourceAddress:      netip.MustParseAddr("2001:db8::2"),
+					DestinationAddress: netip.MustParseAddr("2001:db8::1"),
+				},
+				UpperLayerProtocol: new(uint8(58)),
+				ICMP:               &ICMP{Type: 2, MTU: 1280}, // Packet Too Big
+				Raw:                RawInfo{Length: 1280, PayloadLength: 1240},
+			},
+		},
+	})
+
+	require.Equal(t, "http:connect_ip_packet_processed", name)
+	require.JSONEq(t, `{
+		"stream_id": 4,
+		"source": "application",
+		"packet": {
+			"header": {
+				"version": 6,
+				"payload_length": 1408,
+				"next_header": 0,
+				"hop_limit": 64,
+				"source_address": "2001:db8::1",
+				"destination_address": "2001:db8::2"
+			},
+			"upper_layer_protocol": 17,
+			"raw": {"length": 1448, "payload_length": 1400}
+		},
+		"outcome": "dropped",
+		"reason": "packet_too_large",
+		"icmp_response": {
+			"to": "application",
+			"packet": {
+				"header": {
+					"version": 6,
+					"payload_length": 1240,
+					"next_header": 58,
+					"hop_limit": 64,
+					"source_address": "2001:db8::2",
+					"destination_address": "2001:db8::1"
+				},
+				"upper_layer_protocol": 58,
+				"icmp": {"type": 2, "code": 0, "mtu": 1280},
+				"raw": {"length": 1280, "payload_length": 1240}
+			}
+		}
+	}`, ev)
+}

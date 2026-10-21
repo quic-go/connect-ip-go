@@ -2,8 +2,8 @@ package connectip
 
 import (
 	"encoding/binary"
-	"errors"
 	"fmt"
+	"net/netip"
 
 	"golang.org/x/net/icmp"
 	"golang.org/x/net/ipv4"
@@ -20,11 +20,7 @@ func icmpInvokingPacket(b []byte, ipProto uint8) (invoking []byte, ok bool) {
 	var msg []byte
 	switch {
 	case ipVersion(b) == 4 && ipProto == ipProtoICMP:
-		// fragments at non-zero fragment offsets don't contain the ICMP header
-		if binary.BigEndian.Uint16(b[6:8])&0x1fff != 0 {
-			return nil, false
-		}
-		msg = b[int(b[0]&0x0f)*4:]
+		msg = upperLayerPayload(b)
 		if len(msg) == 0 {
 			return nil, false
 		}
@@ -38,7 +34,7 @@ func icmpInvokingPacket(b []byte, ipProto uint8) (invoking []byte, ok bool) {
 			return nil, false
 		}
 	case ipVersion(b) == 6 && ipProto == ipProtoICMPv6:
-		_, msg, _ = ipv6UpperLayerProtocol(b)
+		msg = upperLayerPayload(b)
 		// ICMPv6 error messages have types from 0 to 127, see Section 2.1 of RFC 4443
 		if len(msg) == 0 || msg[0] >= 128 {
 			return nil, false
@@ -54,69 +50,75 @@ func icmpInvokingPacket(b []byte, ipProto uint8) (invoking []byte, ok bool) {
 	return msg[8:], true
 }
 
-func composeICMPTooLargePacket(b []byte, mtu int) ([]byte, error) {
-	if len(b) == 0 {
-		return nil, errors.New("connect-ip: empty packet")
-	}
+const icmpHopLimit = 64
 
-	var icmpMessage *icmp.Message
-	var psh []byte
-	switch v := ipVersion(b); v {
-	case 4:
-		if len(b) < ipv4.HeaderLen {
-			return nil, errors.New("connect-ip: IPv4 packet too short")
-		}
+type icmpPacket struct {
+	Src, Dst netip.Addr
+	Type     uint8
+	Code     uint8
+	MTU      uint32
+	Data     []byte
+}
+
+// b must have been accepted by parseIPHeader.
+func newICMPTooLargePacket(b []byte, mtu uint32) *icmpPacket {
+	if ipVersion(b) == 4 {
 		// RFC 1812, section 4.3.2.3 recommends quoting as much of the original
 		// packet as possible without exceeding 576 bytes, including the IPv4 and ICMP headers.
 		const maxDataLen = 576 - ipv4.HeaderLen - 8
-		icmpMessage = &icmp.Message{
-			Type: ipv4.ICMPTypeDestinationUnreachable,
+		return &icmpPacket{
+			Src:  netip.AddrFrom4([4]byte(b[16:20])), // the destination of the original packet
+			Dst:  netip.AddrFrom4([4]byte(b[12:16])), // the source of the original packet
+			Type: uint8(ipv4.ICMPTypeDestinationUnreachable),
 			Code: 4, // Fragmentation Needed and Don't Fragment was Set
-			Body: &icmp.PacketTooBig{
-				MTU:  mtu,
-				Data: b[:min(len(b), maxDataLen)],
-			},
+			MTU:  mtu,
+			Data: b[:min(len(b), maxDataLen)],
 		}
-	case 6:
-		if len(b) < ipv6.HeaderLen {
-			return nil, errors.New("connect-ip: IPv6 packet too short")
+	}
+	return &icmpPacket{
+		Src:  netip.AddrFrom16([16]byte(b[24:40])), // the destination of the original packet
+		Dst:  netip.AddrFrom16([16]byte(b[8:24])),  // the source of the original packet
+		Type: uint8(ipv6.ICMPTypePacketTooBig),
+		MTU:  mtu,
+		Data: b[:min(len(b), 1232)],
+	}
+}
+
+func (p *icmpPacket) Marshal() ([]byte, error) {
+	msg := &icmp.Message{
+		Code: int(p.Code),
+		Body: &icmp.PacketTooBig{MTU: int(p.MTU), Data: p.Data},
+	}
+	if p.Src.Is4() {
+		msg.Type = ipv4.ICMPType(p.Type)
+		b, err := msg.Marshal(nil)
+		if err != nil {
+			return nil, fmt.Errorf("connect-ip: failed to marshal ICMP message: %w", err)
 		}
-		icmpMessage = &icmp.Message{
-			Type: ipv6.ICMPTypePacketTooBig,
-			Body: &icmp.PacketTooBig{
-				MTU:  mtu,
-				Data: b[:min(len(b), 1232)],
-			},
-		}
-		psh = icmp.IPv6PseudoHeader(b[24:40], b[8:24])
-	default:
-		return nil, fmt.Errorf("connect-ip: unknown IP version: %d", v)
+		src, dst := p.Src.As4(), p.Dst.As4()
+		var header [ipv4.HeaderLen]byte
+		header[0] = 4<<4 | ipv4.HeaderLen>>2                                   // Version and IHL
+		binary.BigEndian.PutUint16(header[2:4], uint16(ipv4.HeaderLen+len(b))) // Total Length
+		header[8] = icmpHopLimit                                               // TTL
+		header[9] = ipProtoICMP                                                // Protocol
+		copy(header[12:16], src[:])
+		copy(header[16:20], dst[:])
+		binary.BigEndian.PutUint16(header[10:12], calculateIPv4Checksum(header[:]))
+		return append(header[:], b...), nil
 	}
 
-	icmp, err := icmpMessage.Marshal(psh)
+	src, dst := p.Src.As16(), p.Dst.As16()
+	msg.Type = ipv6.ICMPType(p.Type)
+	b, err := msg.Marshal(icmp.IPv6PseudoHeader(src[:], dst[:]))
 	if err != nil {
 		return nil, fmt.Errorf("connect-ip: failed to marshal ICMP message: %w", err)
 	}
-
-	if ipVersion(b) == 4 {
-		var header [ipv4.HeaderLen]byte
-		header[0] = 4<<4 | ipv4.HeaderLen>>2 // Version and IHL
-		ipLen := ipv4.HeaderLen + len(icmp)
-		binary.BigEndian.PutUint16(header[2:4], uint16(ipLen)) // Total Length
-		header[8] = 64                                         // TTL
-		header[9] = 1                                          // Protocol (ICMP)
-		copy(header[12:16], b[16:20])                          // Source IP from original packet
-		copy(header[16:20], b[12:16])                          // Dest IP from original packet (swapped)
-		binary.BigEndian.PutUint16(header[10:12], calculateIPv4Checksum(header[:]))
-		return append(header[:], icmp...), nil
-	}
-
 	var header [ipv6.HeaderLen]byte
-	header[0] = 6 << 4                                         // Version 6
-	binary.BigEndian.PutUint16(header[4:6], uint16(len(icmp))) // Payload Length
-	header[6] = 58                                             // Next Header (ICMPv6)
-	header[7] = 64                                             // Hop Limit
-	copy(header[8:24], b[24:40])                               // Source IP from original packet
-	copy(header[24:40], b[8:24])                               // Dest IP from original packet (swapped)
-	return append(header[:], icmp...), nil
+	header[0] = 6 << 4                                      // Version
+	binary.BigEndian.PutUint16(header[4:6], uint16(len(b))) // Payload Length
+	header[6] = ipProtoICMPv6                               // Next Header
+	header[7] = icmpHopLimit                                // Hop Limit
+	copy(header[8:24], src[:])
+	copy(header[24:40], dst[:])
+	return append(header[:], b...), nil
 }
