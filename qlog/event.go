@@ -4,8 +4,28 @@ import (
 	"time"
 
 	"github.com/quic-go/quic-go"
+	"github.com/quic-go/quic-go/qlogwriter"
 	"github.com/quic-go/quic-go/qlogwriter/jsontext"
 )
+
+const (
+	// EventSchemaHTTP is the qlog event schema for the HTTP Capsule Protocol,
+	// defined in draft-ietf-quic-qlog-h3-events-13.
+	// It defines the http:capsule_created and http:capsule_parsed events.
+	EventSchemaHTTP = "urn:ietf:params:qlog:events:http-13"
+	// EventSchemaConnectIP is the qlog event schema for CONNECT-IP,
+	// defined in draft-seemann-masque-connect-ip-qlog-00.
+	EventSchemaConnectIP = "urn:ietf:params:qlog:events:http#connect-ip-00"
+	// EventSchemaConnectIPDNS is the qlog event schema for the DNS_ASSIGN and PREF64 capsules,
+	// defined in draft-seemann-masque-connect-ip-qlog-00.
+	EventSchemaConnectIPDNS = "urn:ietf:params:qlog:events:http#connect-ip-dns-00"
+)
+
+func init() {
+	qlogwriter.RegisterEventSchema(EventSchemaHTTP)
+	qlogwriter.RegisterEventSchema(EventSchemaConnectIP)
+	qlogwriter.RegisterEventSchema(EventSchemaConnectIPDNS)
+}
 
 type encoderHelper struct {
 	enc *jsontext.Encoder

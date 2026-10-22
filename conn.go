@@ -86,7 +86,7 @@ type Conn struct {
 
 func newProxiedConn(str http3Stream, closeConn func() error) *Conn {
 	var qlogger qlogwriter.Recorder
-	if qlogTrace := str.QlogTrace(); qlogTrace != nil && qlogTrace.SupportsSchemas(qlog.EventSchemaConnectIP) {
+	if qlogTrace := str.QlogTrace(); qlogTrace != nil {
 		qlogger = qlogTrace.AddProducer()
 	}
 	ctx, ctxCancel := context.WithCancelCause(context.Background())
