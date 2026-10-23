@@ -1,10 +1,13 @@
 package connectip
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"net/netip"
 	"slices"
+
+	"github.com/quic-go/connect-ip-go/qlog"
 
 	"golang.org/x/net/ipv4"
 	"golang.org/x/net/ipv6"
@@ -86,9 +89,14 @@ func isAllowedSource(src netip.Addr, prefixes []netip.Prefix, routes []IPRoute) 
 // isAllowedDestination checks if dst is within one of the prefixes,
 // or within one of the routes that allow the IP protocol.
 func isAllowedDestination(dst netip.Addr, ipProto uint8, prefixes []netip.Prefix, routes []IPRoute) bool {
+	_, ok := checkDestination(dst, ipProto, prefixes, routes)
+	return ok
+}
+
+func checkDestination(dst netip.Addr, ipProto uint8, prefixes []netip.Prefix, routes []IPRoute) (qlog.PacketDropReason, bool) {
 	for _, p := range prefixes {
 		if p.Contains(dst) {
-			return true
+			return "", true
 		}
 	}
 	// ICMP is always allowed
@@ -99,15 +107,30 @@ func isAllowedDestination(dst netip.Addr, ipProto uint8, prefixes []netip.Prefix
 	// Without the first fragment, the receiver will not be able to reassemble the original packet.
 	// See Section 4 of RFC 7112.
 	isFragment := dst.Is6() && ipProto == ipProtoFragment
+	reason := qlog.PacketDropDestinationAddressNotAllowed
 	for _, r := range routes {
 		if !r.contains(dst) {
 			continue
 		}
 		if isICMP || isFragment || r.IPProtocol == 0 || r.IPProtocol == ipProto {
-			return true
+			return "", true
 		}
+		reason = qlog.PacketDropProtocolNotAllowed
 	}
-	return false
+	return reason, false
+}
+
+// b must have been accepted by parseIPHeader.
+func upperLayerPayload(b []byte) []byte {
+	if ipVersion(b) == 6 {
+		_, payload, _ := ipv6UpperLayerProtocol(b)
+		return payload
+	}
+	// fragments at non-zero fragment offsets don't contain the upper-layer header
+	if binary.BigEndian.Uint16(b[6:8])&0x1fff != 0 {
+		return nil
+	}
+	return b[int(b[0]&0x0f)*4:]
 }
 
 func ipVersion(b []byte) uint8 { return b[0] >> 4 }
