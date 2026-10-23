@@ -13,8 +13,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/quic-go/connect-ip-go/qlog"
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
+	"github.com/quic-go/quic-go/qlogwriter"
 	"github.com/quic-go/quic-go/quicvarint"
 )
 
@@ -32,6 +34,8 @@ type http3Stream interface {
 	CancelRead(quic.StreamErrorCode)
 	CancelWrite(quic.StreamErrorCode)
 	SetWriteDeadline(time.Time) error
+	StreamID() quic.StreamID
+	QlogTrace() qlogwriter.Trace
 }
 
 var (
@@ -76,13 +80,20 @@ type Conn struct {
 
 	ctx       context.Context // canceled when the connection is closed, with a *CloseError as the cause
 	ctxCancel context.CancelCauseFunc
+
+	qlogger qlogwriter.Recorder
 }
 
 func newProxiedConn(str http3Stream, closeConn func() error) *Conn {
+	var qlogger qlogwriter.Recorder
+	if qlogTrace := str.QlogTrace(); qlogTrace != nil {
+		qlogger = qlogTrace.AddProducer()
+	}
 	ctx, ctxCancel := context.WithCancelCause(context.Background())
 	c := &Conn{
 		str:                     str,
 		closeConn:               closeConn,
+		qlogger:                 qlogger,
 		writeNotify:             make(chan struct{}, 1),
 		writeDone:               make(chan error, 1),
 		assignedAddressUpdates:  make(chan []AssignedAddress, maxQueuedCapsules),
@@ -111,6 +122,11 @@ func newProxiedConn(str http3Stream, closeConn func() error) *Conn {
 			}
 		}
 		c.mu.Unlock()
+		// Capsules are only created while the connection is open, and parsed by this goroutine.
+		// Since the connection is closed now, no more capsules can be logged.
+		if c.qlogger != nil {
+			c.qlogger.Close()
+		}
 	}()
 	go func() {
 		err := c.writeToStream()
@@ -146,7 +162,7 @@ func (c *Conn) AdvertiseRoute(routes []IPRoute) error {
 		return err
 	}
 	routes = slices.Clone(routes)
-	err := c.queueWrite(streamWrite{Data: (&routeAdvertisementCapsule{IPAddressRanges: routes}).append(nil)})
+	err := c.queueCapsule(&routeAdvertisementCapsule{IPAddressRanges: routes})
 	if err == nil {
 		c.localRoutes = routes
 	}
@@ -186,7 +202,7 @@ func (c *Conn) RequestAddresses(prefixes []netip.Prefix) ([]AddressRequestID, er
 		ids[i] = c.lastAddressRequestID + AddressRequestID(i) + 1
 	}
 	capsule := &addressRequestCapsule{RequestIDs: ids, Prefixes: prefixes}
-	err := c.queueWrite(streamWrite{Data: capsule.append(nil)})
+	err := c.queueCapsule(capsule)
 	if err == nil {
 		c.lastAddressRequestID = ids[len(ids)-1]
 	}
@@ -261,7 +277,7 @@ func (c *Conn) sendAddressAssignment(capsule *addressAssignCapsule) error {
 		c.mu.Unlock()
 		return err
 	}
-	if err := c.queueWrite(streamWrite{Data: capsule.append(nil)}); err != nil {
+	if err := c.queueCapsule(capsule); err != nil {
 		c.mu.Unlock()
 		_ = c.Close()
 		return err
@@ -293,7 +309,7 @@ func (c *Conn) SendDNSConfiguration(configurations []DNSConfiguration) error {
 			return fmt.Errorf("invalid DNS configuration: %w", err)
 		}
 	}
-	return c.sendCapsule((&dnsAssignCapsule{DNSConfigurations: configurations}).append(nil))
+	return c.sendCapsule(&dnsAssignCapsule{DNSConfigurations: configurations})
 }
 
 // ReceiveDNSConfiguration waits for the next DNS configuration update from the peer.
@@ -323,7 +339,7 @@ func (c *Conn) SendPREF64Configuration(prefixes []netip.Prefix) error {
 			return fmt.Errorf("invalid NAT64 prefix %d: invalid prefix length %d", i, prefix.Bits())
 		}
 	}
-	return c.sendCapsule((&pref64Capsule{Prefixes: prefixes}).append(nil))
+	return c.sendCapsule(&pref64Capsule{Prefixes: prefixes})
 }
 
 // ReceivePREF64Configuration waits for the next NAT64 prefix update from the
@@ -339,17 +355,35 @@ func (c *Conn) ReceivePREF64Configuration(ctx context.Context) ([]netip.Prefix, 
 	}
 }
 
-func (c *Conn) sendCapsule(capsuleData []byte) error {
+func (c *Conn) sendCapsule(capsule capsule) error {
 	c.mu.Lock()
 	if err := context.Cause(c.ctx); err != nil {
 		c.mu.Unlock()
 		return err
 	}
-	err := c.queueWrite(streamWrite{Data: capsuleData})
+	err := c.queueCapsule(capsule)
 	c.mu.Unlock()
 	if err != nil {
 		_ = c.Close()
 		return err
+	}
+	return nil
+}
+
+// queueCapsule serializes and queues a capsule, and logs it to qlog.
+// The capsule is logged when it is queued, since this is when local state changes take effect.
+func (c *Conn) queueCapsule(capsule capsule) error {
+	data := capsule.append(nil)
+	if err := c.queueWrite(streamWrite{Data: data}); err != nil {
+		return err
+	}
+	if c.qlogger != nil {
+		_, typeLen, _ := quicvarint.Parse(data)
+		pl, _, _ := quicvarint.Parse(data[typeLen:])
+		c.qlogger.RecordEvent(qlog.CapsuleCreated{
+			StreamID: c.str.StreamID(),
+			Capsule:  toQlogCapsule(capsule, qlog.RawInfo{Length: len(data), PayloadLength: int(pl)}),
+		})
 	}
 	return nil
 }
@@ -400,8 +434,10 @@ func (c *Conn) Routes(ctx context.Context) ([]IPRoute, error) {
 }
 
 func (c *Conn) readFromStream() error {
-	p := http3.NewCapsuleParser(c.str)
+	r := &countingByteReader{Reader: quicvarint.NewReader(c.str)}
+	p := http3.NewCapsuleParser(r)
 	for {
+		r.Reset()
 		t, cr, err := p.Next()
 		if errors.Is(err, io.EOF) {
 			return nil
@@ -409,9 +445,18 @@ func (c *Conn) readFromStream() error {
 		if err != nil {
 			return err
 		}
+		payloadLen := cr.Remaining()
 		capsule, err := parseCapsule(t, cr)
 		if err != nil {
 			return err
+		}
+		if c.qlogger != nil {
+			raw := qlog.RawInfo{Length: r.NumRead, PayloadLength: int(payloadLen)}
+			qlogCapsule := qlog.Capsule{Capsule: qlog.UnknownCapsule{Type: uint64(t), Raw: raw}}
+			if capsule != nil {
+				qlogCapsule = toQlogCapsule(capsule, raw)
+			}
+			c.qlogger.RecordEvent(qlog.CapsuleParsed{StreamID: c.str.StreamID(), Capsule: qlogCapsule})
 		}
 		switch capsule := capsule.(type) {
 		case *addressAssignCapsule:
