@@ -80,9 +80,12 @@ func TestRouteAdvertisementCapsule(t *testing.T) {
 }
 
 func TestRouteAdvertisementCapsuleEmpty(t *testing.T) {
-	check(t, RouteAdvertisementCapsule{}, `{
+	check(t, RouteAdvertisementCapsule{
+		Raw: RawInfo{Length: 2, PayloadLength: 0},
+	}, `{
 		"capsule_type": "route_advertisement",
-		"ip_address_ranges": []
+		"ip_address_ranges": [],
+		"raw": {"length": 2, "payload_length": 0}
 	}`)
 }
 

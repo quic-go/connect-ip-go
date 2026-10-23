@@ -55,10 +55,8 @@ func (i RawInfo) encode(enc *jsontext.Encoder) error {
 		h.WriteToken(jsontext.String("length"))
 		h.WriteToken(jsontext.Uint(uint64(i.Length)))
 	}
-	if i.PayloadLength != 0 {
-		h.WriteToken(jsontext.String("payload_length"))
-		h.WriteToken(jsontext.Uint(uint64(i.PayloadLength)))
-	}
+	h.WriteToken(jsontext.String("payload_length"))
+	h.WriteToken(jsontext.Uint(uint64(i.PayloadLength)))
 	h.WriteToken(jsontext.EndObject)
 	return h.err
 }

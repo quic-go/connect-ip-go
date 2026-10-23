@@ -38,7 +38,6 @@ func TestQlogCapsules(t *testing.T) {
 	require.NoError(t, err)
 
 	// Both capsules are sent on stream 0 and have a 7-byte value.
-	// Created capsules only log their total length.
 	addrs := []qlog.Address{{RequestID: 1, IPPrefix: prefix}}
 	require.Equal(t,
 		[]qlogwriter.Event{
@@ -46,7 +45,7 @@ func TestQlogCapsules(t *testing.T) {
 				Capsule: qlog.Capsule{
 					Capsule: qlog.AddressRequestCapsule{
 						RequestedAddresses: addrs,
-						Raw:                qlog.RawInfo{Length: 9},
+						Raw:                qlog.RawInfo{Length: 9, PayloadLength: 7},
 					},
 				},
 			},
@@ -72,7 +71,7 @@ func TestQlogCapsules(t *testing.T) {
 				Capsule: qlog.Capsule{
 					Capsule: qlog.AddressAssignCapsule{
 						AssignedAddresses: addrs,
-						Raw:               qlog.RawInfo{Length: 9},
+						Raw:               qlog.RawInfo{Length: 9, PayloadLength: 7},
 					},
 				},
 			},

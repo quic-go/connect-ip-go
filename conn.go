@@ -378,10 +378,11 @@ func (c *Conn) queueCapsule(capsule capsule) error {
 		return err
 	}
 	if c.qlogger != nil {
-		// The length of the capsule value isn't known here, so only the total length is logged.
+		_, typeLen, _ := quicvarint.Parse(data)
+		pl, _, _ := quicvarint.Parse(data[typeLen:])
 		c.qlogger.RecordEvent(qlog.CapsuleCreated{
 			StreamID: c.str.StreamID(),
-			Capsule:  toQlogCapsule(capsule, qlog.RawInfo{Length: len(data)}),
+			Capsule:  toQlogCapsule(capsule, qlog.RawInfo{Length: len(data), PayloadLength: int(pl)}),
 		})
 	}
 	return nil
