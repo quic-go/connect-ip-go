@@ -11,6 +11,7 @@ import (
 
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/qlogwriter"
+	"github.com/quic-go/quic-go/qlogwriter/jsontext"
 
 	"github.com/stretchr/testify/require"
 )
@@ -67,6 +68,27 @@ func decode(t *testing.T, data string) (string, string) {
 	require.Equal(t, 42*time.Second, time.Duration(result.Time*1e6)*time.Nanosecond)
 
 	return result.Name, string(result.Data)
+}
+
+func TestRawInfo(t *testing.T) {
+	tests := []struct {
+		name     string
+		raw      RawInfo
+		expected string
+	}{
+		{"zero lengths", RawInfo{Length: 0, PayloadLength: 0}, `{"length":0,"payload_length":0}`},
+		{"only zero length", RawInfo{Length: 0, PayloadLength: OmitLength}, `{"length":0}`},
+		{"only zero payload length", RawInfo{Length: OmitLength, PayloadLength: 0}, `{"payload_length":0}`},
+		{"omitted lengths", RawInfo{Length: OmitLength, PayloadLength: OmitLength}, `{}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			require.NoError(t, tt.raw.encode(jsontext.NewEncoder(&buf)))
+			require.JSONEq(t, tt.expected, buf.String())
+			require.Equal(t, tt.expected != `{}`, tt.raw.HasValues())
+		})
+	}
 }
 
 func TestCapsuleCreatedEvent(t *testing.T) {

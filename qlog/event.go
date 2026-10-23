@@ -39,24 +39,31 @@ func (h *encoderHelper) WriteToken(t jsontext.Token) {
 	h.err = h.enc.WriteToken(t)
 }
 
+// OmitLength indicates that a length should not be logged.
+const OmitLength = -1
+
+// RawInfo contains capsule lengths. Zero lengths are logged.
+// Set a field to OmitLength to omit it.
 type RawInfo struct {
 	Length        int // full capsule length, including the Type and Length fields
 	PayloadLength int // length of the capsule value
 }
 
 func (i RawInfo) HasValues() bool {
-	return i.Length != 0 || i.PayloadLength != 0
+	return i.Length != OmitLength || i.PayloadLength != OmitLength
 }
 
 func (i RawInfo) encode(enc *jsontext.Encoder) error {
 	h := encoderHelper{enc: enc}
 	h.WriteToken(jsontext.BeginObject)
-	if i.Length != 0 {
+	if i.Length != OmitLength {
 		h.WriteToken(jsontext.String("length"))
 		h.WriteToken(jsontext.Uint(uint64(i.Length)))
 	}
-	h.WriteToken(jsontext.String("payload_length"))
-	h.WriteToken(jsontext.Uint(uint64(i.PayloadLength)))
+	if i.PayloadLength != OmitLength {
+		h.WriteToken(jsontext.String("payload_length"))
+		h.WriteToken(jsontext.Uint(uint64(i.PayloadLength)))
+	}
 	h.WriteToken(jsontext.EndObject)
 	return h.err
 }
