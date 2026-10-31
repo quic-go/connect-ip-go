@@ -518,6 +518,44 @@ func (c *Conn) writeToStream() error {
 	return context.Cause(c.ctx)
 }
 
+func (c *Conn) recordForwardedPacket(source qlog.Endpoint, packet qlog.Packet) {
+	if c.qlogger == nil {
+		return
+	}
+	c.recordPacketEvent(qlog.PacketProcessed{
+		StreamID: c.str.StreamID(),
+		Source:   source,
+		Packet:   packet,
+		Outcome:  qlog.PacketForwarded,
+	})
+}
+
+func (c *Conn) recordDroppedPacket(src qlog.Endpoint, p qlog.Packet, reason qlog.PacketDropReason, icmpResp *qlog.Packet) {
+	if c.qlogger == nil {
+		return
+	}
+	ev := qlog.PacketProcessed{
+		StreamID: c.str.StreamID(),
+		Source:   src,
+		Packet:   p,
+		Outcome:  qlog.PacketDropped,
+		Reason:   reason,
+	}
+	if icmpResp != nil {
+		ev.ICMPResponse = &qlog.ICMPResponse{To: src, Packet: *icmpResp}
+	}
+	c.recordPacketEvent(ev)
+}
+
+func (c *Conn) recordPacketEvent(ev qlog.PacketProcessed) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.ctx.Err() != nil {
+		return
+	}
+	c.qlogger.RecordEvent(ev)
+}
+
 func (c *Conn) ReadPacket(b []byte) (n int, err error) {
 start:
 	data, err := c.str.ReceiveDatagram(c.ctx)
@@ -543,7 +581,17 @@ start:
 func (c *Conn) handleIncomingProxiedPacket(data []byte) error {
 	src, dst, ipProto, err := parseIPHeader(data)
 	if err != nil {
+		c.recordDroppedPacket(
+			qlog.EndpointPeer,
+			qlog.Packet{Raw: qlog.RawInfo{Length: len(data), PayloadLength: qlog.OmitLength}},
+			qlog.PacketDropInvalid,
+			nil,
+		)
 		return err
+	}
+	var qlogPacket qlog.Packet
+	if c.qlogger != nil {
+		qlogPacket = toQlogPacket(data, src, dst, ipProto)
 	}
 
 	c.mu.Lock()
@@ -562,18 +610,22 @@ func (c *Conn) handleIncomingProxiedPacket(data []byte) error {
 		invoking, ok := icmpInvokingPacket(data, ipProto)
 		if !ok {
 			// TODO: send ICMP
+			c.recordDroppedPacket(qlog.EndpointPeer, qlogPacket, qlog.PacketDropSourceAddressNotAllowed, nil)
 			return fmt.Errorf("connect-ip: datagram source address not allowed: %s", src)
 		}
 		invokingSrc, invokingDst, invokingProto, err := parseTruncatedIPHeader(invoking)
 		if err != nil {
+			c.recordDroppedPacket(qlog.EndpointPeer, qlogPacket, qlog.PacketDropInvalid, nil)
 			return errors.New("connect-ip: malformed ICMP error message")
 		}
 		// ICMP errors are always sent to the source address of the packet that caused the error.
 		if invokingSrc != dst {
+			c.recordDroppedPacket(qlog.EndpointPeer, qlogPacket, qlog.PacketDropSourceAddressNotAllowed, nil)
 			return fmt.Errorf("connect-ip: ICMP error sent to %s for a packet from %s", dst, invokingSrc)
 		}
 		if !isAllowedSource(invokingSrc, assignedAddresses, localRoutes) ||
 			!isAllowedDestination(invokingDst, invokingProto, peerAddresses, peerRoutes) {
+			c.recordDroppedPacket(qlog.EndpointPeer, qlogPacket, qlog.PacketDropSourceAddressNotAllowed, nil)
 			return fmt.Errorf(
 				"connect-ip: ICMP error for a packet that couldn't have been sent through the tunnel: %s -> %s (protocol: %d)",
 				invokingSrc, invokingDst, invokingProto,
@@ -584,10 +636,12 @@ func (c *Conn) handleIncomingProxiedPacket(data []byte) error {
 	// The destination IP address is valid if it
 	// 1. is within one of the ranges assigned to us, or
 	// 2. is within one of the ranges that we advertised to the peer.
-	if !isAllowedDestination(dst, ipProto, assignedAddresses, localRoutes) {
+	if reason, ok := checkDestination(dst, ipProto, assignedAddresses, localRoutes); !ok {
 		// TODO: send ICMP
+		c.recordDroppedPacket(qlog.EndpointPeer, qlogPacket, reason, nil)
 		return fmt.Errorf("connect-ip: datagram destination address / protocol not allowed: %s (protocol: %d)", dst, ipProto)
 	}
+	c.recordForwardedPacket(qlog.EndpointPeer, qlogPacket)
 	return nil
 }
 
@@ -606,19 +660,24 @@ func (c *Conn) WritePacket(b []byte) (icmp []byte, err error) {
 	default:
 	}
 
-	data, err := c.composeDatagram(b)
+	data, qlogPacket, err := c.composeDatagram(b)
 	if err != nil {
 		log.Printf("dropping proxied packet (%d bytes) that can't be proxied: %s", len(b), err)
 		return nil, nil
 	}
 	if err := c.str.SendDatagram(data); err != nil {
 		if _, ok := errors.AsType[*quic.DatagramTooLargeError](err); ok {
-			icmpPacket, err := composeICMPTooLargePacket(b, minMTU)
+			resp := newICMPTooLargePacket(b, minMTU)
+			icmpPacket, err := resp.Marshal()
 			if err != nil {
 				log.Printf("failed to compose ICMP too large packet: %s", err)
+				c.recordDroppedPacket(qlog.EndpointApplication, qlogPacket, qlog.PacketDropTooLarge, nil)
+				return nil, nil
 			}
+			c.recordDroppedPacket(qlog.EndpointApplication, qlogPacket, qlog.PacketDropTooLarge, new(toQlogICMPPacket(resp, len(icmpPacket))))
 			return icmpPacket, nil
 		}
+		c.recordDroppedPacket(qlog.EndpointApplication, qlogPacket, qlog.PacketDropSendError, nil)
 		select {
 		case <-c.ctx.Done():
 			return nil, context.Cause(c.ctx)
@@ -626,13 +685,24 @@ func (c *Conn) WritePacket(b []byte) (icmp []byte, err error) {
 			return nil, err
 		}
 	}
+	c.recordForwardedPacket(qlog.EndpointApplication, qlogPacket)
 	return nil, nil
 }
 
-func (c *Conn) composeDatagram(b []byte) ([]byte, error) {
+func (c *Conn) composeDatagram(b []byte) ([]byte, qlog.Packet, error) {
 	src, dst, ipProto, err := parseIPHeader(b)
 	if err != nil {
-		return nil, err
+		c.recordDroppedPacket(
+			qlog.EndpointApplication,
+			qlog.Packet{Raw: qlog.RawInfo{Length: len(b), PayloadLength: qlog.OmitLength}},
+			qlog.PacketDropInvalid,
+			nil,
+		)
+		return nil, qlog.Packet{}, err
+	}
+	var qlogPacket qlog.Packet
+	if c.qlogger != nil {
+		qlogPacket = toQlogPacket(b, src, dst, ipProto)
 	}
 
 	c.mu.Lock()
@@ -655,34 +725,40 @@ func (c *Conn) composeDatagram(b []byte) ([]byte, error) {
 	if invoking, ok := icmpInvokingPacket(b, ipProto); ok {
 		invokingSrc, invokingDst, invokingProto, err := parseTruncatedIPHeader(invoking)
 		if err != nil {
-			return nil, errors.New("connect-ip: malformed ICMP error message")
+			c.recordDroppedPacket(qlog.EndpointApplication, qlogPacket, qlog.PacketDropInvalid, nil)
+			return nil, qlog.Packet{}, errors.New("connect-ip: malformed ICMP error message")
 		}
 		// ICMP errors are always sent to the source address of the packet that caused the error.
 		if invokingSrc != dst {
-			return nil, fmt.Errorf("connect-ip: ICMP error sent to %s for a packet from %s", dst, invokingSrc)
+			c.recordDroppedPacket(qlog.EndpointApplication, qlogPacket, qlog.PacketDropDestinationAddressNotAllowed, nil)
+			return nil, qlog.Packet{}, fmt.Errorf("connect-ip: ICMP error sent to %s for a packet from %s", dst, invokingSrc)
 		}
 		if !isAllowedSource(invokingSrc, peerAddresses, nil) ||
 			!isAllowedDestination(invokingDst, invokingProto, assignedAddresses, localRoutes) {
-			return nil, fmt.Errorf(
+			c.recordDroppedPacket(qlog.EndpointApplication, qlogPacket, qlog.PacketDropDestinationAddressNotAllowed, nil)
+			return nil, qlog.Packet{}, fmt.Errorf(
 				"connect-ip: ICMP error for a packet that couldn't have been received through the tunnel: %s -> %s (protocol: %d)",
 				invokingSrc, invokingDst, invokingProto,
 			)
 		}
 	} else if !isAllowedSource(src, assignedAddresses, localRoutes) {
-		return nil, fmt.Errorf("connect-ip: source address not allowed: %s", src)
+		c.recordDroppedPacket(qlog.EndpointApplication, qlogPacket, qlog.PacketDropSourceAddressNotAllowed, nil)
+		return nil, qlog.Packet{}, fmt.Errorf("connect-ip: source address not allowed: %s", src)
 	}
 	// The destination IP address is valid if it
 	// 1. is within one of the ranges that we assigned to the peer, or
 	// 2. is within one of the ranges that the peer advertised to us.
-	if !isAllowedDestination(dst, ipProto, peerAddresses, peerRoutes) {
-		return nil, fmt.Errorf("connect-ip: destination address / protocol not allowed: %s (protocol: %d)", dst, ipProto)
+	if reason, ok := checkDestination(dst, ipProto, peerAddresses, peerRoutes); !ok {
+		c.recordDroppedPacket(qlog.EndpointApplication, qlogPacket, reason, nil)
+		return nil, qlog.Packet{}, fmt.Errorf("connect-ip: destination address / protocol not allowed: %s (protocol: %d)", dst, ipProto)
 	}
 
 	switch ipVersion(b) {
 	case 4:
 		ttl := b[8]
 		if ttl <= 1 {
-			return nil, fmt.Errorf("connect-ip: datagram TTL too small: %d", ttl)
+			c.recordDroppedPacket(qlog.EndpointApplication, qlogPacket, qlog.PacketDropHopLimitExceeded, nil)
+			return nil, qlog.Packet{}, fmt.Errorf("connect-ip: datagram TTL too small: %d", ttl)
 		}
 		b[8]-- // decrement TTL
 		// recalculate the checksum
@@ -691,14 +767,15 @@ func (c *Conn) composeDatagram(b []byte) ([]byte, error) {
 	case 6:
 		hopLimit := b[7]
 		if hopLimit <= 1 {
-			return nil, fmt.Errorf("connect-ip: datagram Hop Limit too small: %d", hopLimit)
+			c.recordDroppedPacket(qlog.EndpointApplication, qlogPacket, qlog.PacketDropHopLimitExceeded, nil)
+			return nil, qlog.Packet{}, fmt.Errorf("connect-ip: datagram Hop Limit too small: %d", hopLimit)
 		}
 		b[7]-- // Decrement Hop Limit
 	}
 	data := make([]byte, 0, len(contextIDZero)+len(b))
 	data = append(data, contextIDZero...)
 	data = append(data, b...)
-	return data, nil
+	return data, qlogPacket, nil
 }
 
 func (c *Conn) Close() error {

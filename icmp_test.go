@@ -2,7 +2,6 @@ package connectip
 
 import (
 	"encoding/binary"
-	"net"
 	"net/netip"
 	"testing"
 
@@ -12,6 +11,10 @@ import (
 
 	"github.com/stretchr/testify/require"
 )
+
+func composeICMPTooLargePacket(b []byte, mtu int) ([]byte, error) {
+	return newICMPTooLargePacket(b, uint32(mtu)).Marshal()
+}
 
 func TestICMPTooLargeIPv4(t *testing.T) {
 	src := netip.MustParseAddr("192.168.1.1")
@@ -96,45 +99,4 @@ func TestICMPTooLargeIPv6(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, mtu, icmpBody.MTU)
 	require.Equal(t, orig, icmpBody.Data)
-}
-
-func TestICMPFailures(t *testing.T) {
-	t.Run("empty packet", func(t *testing.T) {
-		_, err := composeICMPTooLargePacket([]byte{}, 1)
-		require.EqualError(t, err, "connect-ip: empty packet")
-	})
-
-	t.Run("too short IPv4 header", func(t *testing.T) {
-		origHdr := &ipv4.Header{
-			Version:  4,
-			Len:      ipv4.HeaderLen,
-			TotalLen: 60,
-			Src:      net.IPv4(1, 2, 3, 4),
-			Dst:      net.IPv4(5, 6, 7, 8),
-		}
-		data, err := origHdr.Marshal()
-		require.NoError(t, err)
-		_, err = composeICMPTooLargePacket(data[:ipv4.HeaderLen-1], 1)
-		require.EqualError(t, err, "connect-ip: IPv4 packet too short")
-	})
-
-	t.Run("too short IPv6 header", func(t *testing.T) {
-		data := []byte{
-			0x60, 0x00, 0x00, 0x00, // Version, Traffic Class, Flow Label
-			0x00, 0x00, // Payload Length
-			0x00, 0x40, // Next Header, Hop Limit
-		}
-		data = append(data, net.ParseIP("2001:db8::1").To16()...)
-		data = append(data, net.ParseIP("2001:db8::2").To16()...)
-		_, err := composeICMPTooLargePacket(data[:ipv6.HeaderLen-1], 1)
-		require.EqualError(t, err, "connect-ip: IPv6 packet too short")
-	})
-
-	t.Run("unknown IP version", func(t *testing.T) {
-		data := []byte{
-			0x30, 0x00, 0x00, 0x00, // what is IPv3?
-		}
-		_, err := composeICMPTooLargePacket(data, 1)
-		require.EqualError(t, err, "connect-ip: unknown IP version: 3")
-	})
 }

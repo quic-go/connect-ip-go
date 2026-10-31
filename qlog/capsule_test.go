@@ -39,7 +39,9 @@ func TestAddressAssignCapsule(t *testing.T) {
 }
 
 func TestAddressAssignCapsuleEmpty(t *testing.T) {
-	check(t, AddressAssignCapsule{}, `{
+	check(t, AddressAssignCapsule{
+		Raw: RawInfo{Length: OmitLength, PayloadLength: OmitLength},
+	}, `{
 		"capsule_type": "address_assign",
 		"assigned_addresses": []
 	}`)
@@ -172,7 +174,9 @@ func TestPREF64Capsule(t *testing.T) {
 }
 
 func TestPREF64CapsuleEmpty(t *testing.T) {
-	check(t, PREF64Capsule{}, `{
+	check(t, PREF64Capsule{
+		Raw: RawInfo{Length: OmitLength, PayloadLength: OmitLength},
+	}, `{
 		"capsule_type": "pref64",
 		"prefixes": []
 	}`)

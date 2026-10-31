@@ -45,6 +45,7 @@ type mockStream struct {
 	toRead          <-chan []byte
 	datagrams       <-chan []byte // if set, ReceiveDatagram returns io.EOF once it's drained
 	sendDatagramErr error
+	sendDatagram    func([]byte) error
 	writeStarted    chan struct{}
 	written         chan<- []byte
 	qlogTrace       qlogwriter.Trace
@@ -82,7 +83,12 @@ func (m *mockStream) Context() context.Context         { return context.Backgrou
 func (m *mockStream) SetWriteDeadline(time.Time) error { return nil }
 func (m *mockStream) SetReadDeadline(time.Time) error  { return nil }
 func (m *mockStream) SetDeadline(time.Time) error      { return nil }
-func (m *mockStream) SendDatagram(data []byte) error   { return m.sendDatagramErr }
+func (m *mockStream) SendDatagram(data []byte) error {
+	if m.sendDatagram != nil {
+		return m.sendDatagram(data)
+	}
+	return m.sendDatagramErr
+}
 func (m *mockStream) ReceiveDatagram(ctx context.Context) ([]byte, error) {
 	if m.datagrams != nil {
 		select {
@@ -576,10 +582,10 @@ func TestICMPErrors(t *testing.T) {
 	})
 
 	t.Run("sending", func(t *testing.T) {
-		_, err := conn.composeDatagram(icmpError(net.IPv4(192, 0, 2, 2), net.IPv4(192, 0, 2, 1)))
+		_, _, err := conn.composeDatagram(icmpError(net.IPv4(192, 0, 2, 2), net.IPv4(192, 0, 2, 1)))
 		require.NoError(t, err)
 		// we didn't assign 198.51.100.7 to the peer
-		_, err = conn.composeDatagram(icmpError(net.IPv4(198, 51, 100, 7), net.IPv4(192, 0, 2, 1)))
+		_, _, err = conn.composeDatagram(icmpError(net.IPv4(198, 51, 100, 7), net.IPv4(192, 0, 2, 1)))
 		require.ErrorContains(t, err, "couldn't have been received through the tunnel: 198.51.100.7 -> 192.0.2.1 (protocol: 17)")
 	})
 }
@@ -606,7 +612,7 @@ func TestSkipUnknownCapsule(t *testing.T) {
 func TestSendingDatagrams(t *testing.T) {
 	t.Run("empty packet", func(t *testing.T) {
 		conn := newProxiedConn(&mockStream{}, nil)
-		_, err := conn.composeDatagram([]byte{})
+		_, _, err := conn.composeDatagram([]byte{})
 		require.ErrorContains(t, err, "connect-ip: empty packet")
 	})
 
@@ -614,7 +620,7 @@ func TestSendingDatagrams(t *testing.T) {
 		conn := newProxiedConn(&mockStream{}, nil)
 		data := make([]byte, 20)
 		data[0] = 5 << 4 // IPv5
-		_, err := conn.composeDatagram(data)
+		_, _, err := conn.composeDatagram(data)
 		require.ErrorContains(t, err, "connect-ip: unknown IP versions: 5")
 	})
 
@@ -627,7 +633,7 @@ func TestSendingDatagrams(t *testing.T) {
 			Checksum: 89,
 		}).Marshal()
 		require.NoError(t, err)
-		_, err = conn.composeDatagram(data[:ipv4.HeaderLen-1])
+		_, _, err = conn.composeDatagram(data[:ipv4.HeaderLen-1])
 		require.ErrorContains(t, err, "connect-ip: IPv4 packet too short")
 	})
 
@@ -640,7 +646,7 @@ func TestSendingDatagrams(t *testing.T) {
 			TTL: 64,
 		})
 		data[10]++ // corrupt the checksum
-		_, err := conn.composeDatagram(data)
+		_, _, err := conn.composeDatagram(data)
 		require.ErrorContains(t, err, "connect-ip: invalid IPv4 header checksum")
 	})
 
@@ -652,11 +658,11 @@ func TestSendingDatagrams(t *testing.T) {
 			Len: 20,
 			TTL: 64,
 		})
-		_, err := conn.composeDatagram(append(data, 0, 0, 0, 0))
+		_, _, err := conn.composeDatagram(append(data, 0, 0, 0, 0))
 		require.ErrorContains(t, err, "connect-ip: IPv4 total length (20) doesn't match packet size (24)")
 		binary.BigEndian.PutUint16(data[2:4], 24)
 		binary.BigEndian.PutUint16(data[10:12], calculateIPv4Checksum(data))
-		_, err = conn.composeDatagram(data)
+		_, _, err = conn.composeDatagram(data)
 		require.ErrorContains(t, err, "connect-ip: IPv4 total length (24) doesn't match packet size (20)")
 	})
 
@@ -670,7 +676,7 @@ func TestSendingDatagrams(t *testing.T) {
 			TTL:     64,
 			Options: []byte{1, 1, 1, 0}, // three No Operation options, End of Options List
 		})
-		datagram, err := conn.composeDatagram(data)
+		datagram, _, err := conn.composeDatagram(data)
 		require.NoError(t, err)
 		packet := datagram[len(contextIDZero):]
 		require.Equal(t, uint8(63), packet[8])
@@ -679,15 +685,15 @@ func TestSendingDatagrams(t *testing.T) {
 
 	t.Run("IPv6 packet too short", func(t *testing.T) {
 		conn := newProxiedConn(&mockStream{}, nil)
-		_, err := conn.composeDatagram(ipv6Header[:ipv6.HeaderLen-1])
+		_, _, err := conn.composeDatagram(ipv6Header[:ipv6.HeaderLen-1])
 		require.ErrorContains(t, err, "connect-ip: IPv6 packet too short")
 	})
 
 	t.Run("IPv6 payload length mismatch", func(t *testing.T) {
 		conn := newProxiedConn(&mockStream{}, nil)
-		_, err := conn.composeDatagram(composeIPv6Packet(ipProtoDestOpts, 17)[:50])
+		_, _, err := conn.composeDatagram(composeIPv6Packet(ipProtoDestOpts, 17)[:50])
 		require.ErrorContains(t, err, "connect-ip: IPv6 payload length (16) doesn't match packet size (10)")
-		_, err = conn.composeDatagram(append(composeIPv6Packet(17), make([]byte, 8)...))
+		_, _, err = conn.composeDatagram(append(composeIPv6Packet(17), make([]byte, 8)...))
 		require.ErrorContains(t, err, "connect-ip: IPv6 payload length (0) doesn't match packet size (8)")
 	})
 
@@ -714,13 +720,13 @@ func TestSendingDatagrams(t *testing.T) {
 			Len:      20,
 			TTL:      64,
 		}
-		_, err = conn.composeDatagram(marshalIPv4Header(t, hdr))
+		_, _, err = conn.composeDatagram(marshalIPv4Header(t, hdr))
 		require.NoError(t, err)
 
 		hdr.Src = net.IPv4(192, 168, 0, 11)
 		packet := marshalIPv4Header(t, hdr)
 		orig := bytes.Clone(packet)
-		_, err = conn.composeDatagram(packet)
+		_, _, err = conn.composeDatagram(packet)
 		require.ErrorContains(t, err, "source address not allowed: 192.168.0.11")
 		require.Equal(t, orig, packet)
 
@@ -728,7 +734,7 @@ func TestSendingDatagrams(t *testing.T) {
 		require.NoError(t, conn.AdvertiseRoute([]IPRoute{
 			{StartIP: netip.MustParseAddr("192.168.0.0"), EndIP: netip.MustParseAddr("192.168.0.255"), IPProtocol: 6},
 		}))
-		_, err = conn.composeDatagram(packet)
+		_, _, err = conn.composeDatagram(packet)
 		require.NoError(t, err)
 	})
 
@@ -752,13 +758,13 @@ func TestSendingDatagrams(t *testing.T) {
 			Len:      20,
 			TTL:      64,
 		}
-		_, err = conn.composeDatagram(marshalIPv4Header(t, hdr))
+		_, _, err = conn.composeDatagram(marshalIPv4Header(t, hdr))
 		require.NoError(t, err)
 
 		hdr.Dst = net.IPv4(10, 1, 2, 4)
 		packet := marshalIPv4Header(t, hdr)
 		orig := bytes.Clone(packet)
-		_, err = conn.composeDatagram(packet)
+		_, _, err = conn.composeDatagram(packet)
 		require.ErrorContains(t, err, "not allowed: 10.1.2.4 (protocol: 42)")
 		require.Equal(t, orig, packet)
 
@@ -766,14 +772,14 @@ func TestSendingDatagrams(t *testing.T) {
 		hdr.Protocol = 41
 		packet = marshalIPv4Header(t, hdr)
 		orig = bytes.Clone(packet)
-		_, err = conn.composeDatagram(packet)
+		_, _, err = conn.composeDatagram(packet)
 		require.ErrorContains(t, err, "not allowed: 10.1.2.3 (protocol: 41)")
 		require.Equal(t, orig, packet)
 
 		// An address assigned to the peer is reachable for any protocol.
 		require.NoError(t, conn.AssignAddresses([]netip.Prefix{netip.MustParsePrefix("172.16.0.1/32")}))
 		hdr.Dst = net.IPv4(172, 16, 0, 1)
-		_, err = conn.composeDatagram(marshalIPv4Header(t, hdr))
+		_, _, err = conn.composeDatagram(marshalIPv4Header(t, hdr))
 		require.NoError(t, err)
 	})
 }
