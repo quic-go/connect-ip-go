@@ -33,7 +33,6 @@ const (
 	PacketDropHopLimitExceeded             PacketDropReason = "hop_limit_exceeded"
 	PacketDropTooLarge                     PacketDropReason = "packet_too_large"
 	PacketDropSendError                    PacketDropReason = "send_error"
-	PacketDropOther                        PacketDropReason = "other"
 )
 
 // An IPHeader is an IPv4Header or an IPv6Header.
