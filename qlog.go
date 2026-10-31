@@ -103,6 +103,10 @@ func toQlogDNSConfiguration(cfg DNSConfiguration) qlog.DNSConfiguration {
 func toQlogPacket(b []byte, src, dst netip.Addr, ipProto uint8) qlog.Packet {
 	payload := upperLayerPayload(b)
 	p := qlog.Packet{Raw: qlog.RawInfo{Length: len(b), PayloadLength: len(payload)}}
+	// fragments at non-zero fragment offsets don't contain the upper-layer header
+	if payload == nil {
+		p.Raw.PayloadLength = qlog.OmitLength
+	}
 	switch ipVersion(b) {
 	case 4:
 		p.Header = qlog.IPv4Header{

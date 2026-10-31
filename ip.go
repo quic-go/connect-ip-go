@@ -120,6 +120,8 @@ func checkDestination(dst netip.Addr, ipProto uint8, prefixes []netip.Prefix, ro
 	return reason, false
 }
 
+// upperLayerPayload returns the payload starting with the upper-layer header.
+// For fragments at non-zero fragment offsets, it returns nil.
 // b must have been accepted by parseIPHeader.
 func upperLayerPayload(b []byte) []byte {
 	if ipVersion(b) == 6 {

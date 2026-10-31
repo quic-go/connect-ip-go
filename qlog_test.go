@@ -17,6 +17,7 @@ import (
 	"github.com/quic-go/quic-go/testutils/events"
 
 	"golang.org/x/net/ipv4"
+	"golang.org/x/net/ipv6"
 
 	"github.com/stretchr/testify/require"
 )
@@ -280,6 +281,25 @@ func TestQlogIPv6Packet(t *testing.T) {
 			Raw:                qlog.RawInfo{Length: 64, PayloadLength: 8},
 		},
 		toQlogPacket(packet, src, dst, ipProto),
+	)
+}
+
+func TestQlogNonFirstFragment(t *testing.T) {
+	// fragments at non-zero fragment offsets don't contain the upper-layer header
+	ipv4Fragment := append(
+		marshalIPv4Header(t, &ipv4.Header{Len: ipv4.HeaderLen, Protocol: 17, FragOff: 1, Dst: net.IPv4(10, 0, 0, 1)}),
+		make([]byte, 8)...,
+	)
+	require.Equal(t,
+		qlog.RawInfo{Length: 28, PayloadLength: qlog.OmitLength},
+		toQlogPacket(ipv4Fragment, netip.Addr{}, netip.Addr{}, 17).Raw,
+	)
+
+	ipv6Fragment := append(composeIPv6Packet(ipProtoFragment, 17), make([]byte, 8)...)
+	ipv6Fragment[ipv6.HeaderLen+2] = 1 // Fragment Offset
+	require.Equal(t,
+		qlog.RawInfo{Length: 56, PayloadLength: qlog.OmitLength},
+		toQlogPacket(ipv6Fragment, netip.Addr{}, netip.Addr{}, ipProtoFragment).Raw,
 	)
 }
 
