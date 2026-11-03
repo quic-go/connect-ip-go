@@ -10,9 +10,9 @@ import (
 
 const (
 	// EventSchemaHTTP is the qlog event schema for the HTTP Capsule Protocol,
-	// defined in draft-ietf-quic-qlog-h3-events-13.
+	// defined in draft-ietf-quic-qlog-h3-events-14.
 	// It defines the http:capsule_created and http:capsule_parsed events.
-	EventSchemaHTTP = "urn:ietf:params:qlog:events:http-13"
+	EventSchemaHTTP = "urn:ietf:params:qlog:events:http-14"
 	// EventSchemaConnectIP is the qlog event schema for CONNECT-IP,
 	// defined in draft-seemann-masque-connect-ip-qlog-00.
 	EventSchemaConnectIP = "urn:ietf:params:qlog:events:http#connect-ip-00"
