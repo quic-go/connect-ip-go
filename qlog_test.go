@@ -322,12 +322,13 @@ func TestQlogPacketDuringClose(t *testing.T) {
 	}()
 	<-sending
 	close(toRead) // the peer closes the stream while the packet is being sent
+	<-conn.ctx.Done()
+	close(unblock)
+	<-done
 	select {
 	case <-recorder.closed:
 	case <-time.After(time.Second):
 		t.Fatal("recorder wasn't closed")
 	}
-	close(unblock)
-	<-done
-	require.Empty(t, recorder.Events(qlog.PacketProcessed{}))
+	require.Len(t, recorder.Events(qlog.PacketProcessed{}), 1)
 }

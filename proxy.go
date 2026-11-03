@@ -15,6 +15,9 @@ func (s *Proxy) Proxy(w http.ResponseWriter, _ *ProxyRequest) (*Conn, error) {
 	w.Header().Set(http3.CapsuleProtocolHeader, capsuleProtocolHeaderValue)
 	w.WriteHeader(http.StatusOK)
 
-	str := w.(http3.HTTPStreamer).HTTPStream()
+	str, err := w.(http3.HTTPStreamer).HTTPStream()
+	if err != nil {
+		return nil, err
+	}
 	return newProxiedConn(str, nil), nil
 }

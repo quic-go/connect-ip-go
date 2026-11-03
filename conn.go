@@ -81,7 +81,9 @@ type Conn struct {
 	ctx       context.Context // canceled when the connection is closed, with a *CloseError as the cause
 	ctxCancel context.CancelCauseFunc
 
-	qlogger qlogwriter.Recorder
+	qlogger          qlogwriter.Recorder
+	qloggerMx        sync.Mutex
+	qloggerProducers int // the open connection, and calls that may produce qlog events
 }
 
 func newProxiedConn(str http3Stream, closeConn func() error) *Conn {
@@ -104,6 +106,9 @@ func newProxiedConn(str http3Stream, closeConn func() error) *Conn {
 		ctx:                     ctx,
 		ctxCancel:               ctxCancel,
 	}
+	if qlogger != nil {
+		c.qloggerProducers = 1
+	}
 	go func() {
 		err := c.readFromStream()
 		if err != nil {
@@ -125,7 +130,7 @@ func newProxiedConn(str http3Stream, closeConn func() error) *Conn {
 		// Capsules are only created while the connection is open, and parsed by this goroutine.
 		// Since the connection is closed now, no more capsules can be logged.
 		if c.qlogger != nil {
-			c.qlogger.Close()
+			c.removeQlogProducer()
 		}
 	}()
 	go func() {
@@ -522,7 +527,7 @@ func (c *Conn) recordForwardedPacket(source qlog.Endpoint, packet qlog.Packet) {
 	if c.qlogger == nil {
 		return
 	}
-	c.recordPacketEvent(qlog.PacketProcessed{
+	c.qlogger.RecordEvent(qlog.PacketProcessed{
 		StreamID: c.str.StreamID(),
 		Source:   source,
 		Packet:   packet,
@@ -544,19 +549,37 @@ func (c *Conn) recordDroppedPacket(src qlog.Endpoint, p qlog.Packet, reason qlog
 	if icmpResp != nil {
 		ev.ICMPResponse = &qlog.ICMPResponse{To: src, Packet: *icmpResp}
 	}
-	c.recordPacketEvent(ev)
-}
-
-func (c *Conn) recordPacketEvent(ev qlog.PacketProcessed) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.ctx.Err() != nil {
-		return
-	}
 	c.qlogger.RecordEvent(ev)
 }
 
+// addQlogProducer registers a call that may produce qlog events.
+// It only fails after the connection was closed, so callers must check for closure after calling it.
+func (c *Conn) addQlogProducer() bool {
+	c.qloggerMx.Lock()
+	defer c.qloggerMx.Unlock()
+
+	if c.qloggerProducers == 0 {
+		return false
+	}
+	c.qloggerProducers++
+	return true
+}
+
+// removeQlogProducer closes the qlogger when the last producer is removed.
+func (c *Conn) removeQlogProducer() {
+	c.qloggerMx.Lock()
+	defer c.qloggerMx.Unlock()
+
+	c.qloggerProducers--
+	if c.qloggerProducers == 0 {
+		c.qlogger.Close()
+	}
+}
+
 func (c *Conn) ReadPacket(b []byte) (n int, err error) {
+	if c.qlogger != nil && c.addQlogProducer() {
+		defer c.removeQlogProducer()
+	}
 start:
 	data, err := c.str.ReceiveDatagram(c.ctx)
 	if err != nil {
@@ -652,6 +675,9 @@ func (c *Conn) handleIncomingProxiedPacket(data []byte) error {
 // If sending the packet fails, it might return an ICMP packet.
 // It is the caller's responsibility to send the ICMP packet to the sender.
 func (c *Conn) WritePacket(b []byte) (icmp []byte, err error) {
+	if c.qlogger != nil && c.addQlogProducer() {
+		defer c.removeQlogProducer()
+	}
 	// The stream's send side is closed asynchronously,
 	// so it might still accept datagrams after the connection was closed.
 	select {
