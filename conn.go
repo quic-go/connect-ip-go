@@ -57,7 +57,7 @@ type streamWrite struct {
 	Fin  bool
 }
 
-// Conn is a connection that proxies IP packets over HTTP/3.
+// Conn is a connection that proxies IP packets over HTTP/3 or HTTP/2.
 type Conn struct {
 	str         http3Stream
 	closeConn   func() error

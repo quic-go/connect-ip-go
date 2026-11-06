@@ -45,6 +45,38 @@ func TestProxyRequestParsing(t *testing.T) {
 		require.Equal(t, &ProxyRequest{}, r)
 	})
 
+	t.Run("valid HTTP/2 request", func(t *testing.T) {
+		template := uritemplate.MustNew("https://localhost:1234/masque/ip")
+		req := newRequest("https://localhost:1234/masque/ip")
+		req.Proto, req.ProtoMajor = "HTTP/2.0", 2
+		req.Header.Set(":protocol", requestProtocol)
+		r, err := ParseProxyRequest(req, template)
+		require.NoError(t, err)
+		require.Equal(t, req.Body, r.body)
+	})
+
+	t.Run("reject another HTTP/2 protocol", func(t *testing.T) {
+		template := uritemplate.MustNew("https://localhost:1234/masque/ip")
+		req := newRequest("https://localhost:1234/masque/ip")
+		req.Proto, req.ProtoMajor = "HTTP/2.0", 2
+		req.Header.Set(":protocol", "websocket")
+		_, err := ParseProxyRequest(req, template)
+		require.EqualError(t, err, "unexpected protocol: websocket")
+		var perr *ProxyRequestParseError
+		require.ErrorAs(t, err, &perr)
+		require.Equal(t, http.StatusNotImplemented, perr.HTTPStatus)
+	})
+
+	t.Run("reject an HTTP/2 CONNECT without a protocol", func(t *testing.T) {
+		template := uritemplate.MustNew("https://localhost:1234/masque/ip")
+		req := newRequest("https://localhost:1234/masque/ip")
+		req.Proto, req.ProtoMajor = "HTTP/2.0", 2
+		_, err := ParseProxyRequest(req, template)
+		var perr *ProxyRequestParseError
+		require.ErrorAs(t, err, &perr)
+		require.Equal(t, http.StatusNotImplemented, perr.HTTPStatus)
+	})
+
 	t.Run("reject templates with variables", func(t *testing.T) {
 		template := uritemplate.MustNew("https://localhost:1234/masque/ip?t={target}&i={ipproto}")
 		req := newRequest("https://localhost:1234/masque/ip?t=foobar&i=42")

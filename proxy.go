@@ -11,8 +11,16 @@ var contextIDZero = quicvarint.Append([]byte{}, 0)
 
 type Proxy struct{}
 
-func (s *Proxy) Proxy(w http.ResponseWriter, _ *ProxyRequest) (*Conn, error) {
+// Proxy accepts a request parsed by [ParseProxyRequest] and returns the proxied connection.
+//
+// On an HTTP/2 server, which needs to run with GODEBUG=http2xconnect=1 to accept the request
+// (Extended CONNECT is disabled by default), the HTTP handler must not return
+// before the returned Conn is closed: the stream ends with the handler.
+func (s *Proxy) Proxy(w http.ResponseWriter, r *ProxyRequest) (*Conn, error) {
 	w.Header().Set(http3.CapsuleProtocolHeader, capsuleProtocolHeaderValue)
+	if r.body != nil {
+		return proxyHTTP2(w, r.body)
+	}
 	w.WriteHeader(http.StatusOK)
 
 	str, err := w.(http3.HTTPStreamer).HTTPStream()
