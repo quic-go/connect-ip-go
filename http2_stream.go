@@ -69,6 +69,8 @@ type http2Stream struct {
 	interrupted bool
 	err         error
 	flushed     chan struct{} // closed when flush returns
+
+	dropped atomic.Uint64 // DATAGRAM capsules that found the queue full
 }
 
 var _ http3Stream = &http2Stream{}
@@ -162,6 +164,7 @@ func (s *http2Stream) SendDatagram(data []byte) error {
 		return err
 	}
 	if len(s.pending) >= maxPendingHTTP2Bytes {
+		s.dropped.Add(1)
 		return nil
 	}
 	s.pending = quicvarint.Append(s.pending, uint64(capsuleTypeDatagram))
@@ -169,6 +172,16 @@ func (s *http2Stream) SendDatagram(data []byte) error {
 	s.pending = append(s.pending, data...)
 	s.cond.Broadcast()
 	return nil
+}
+
+// DroppedDatagrams returns how many packets WritePacket accepted and then dropped,
+// because the HTTP/2 stream carrying them fell behind. It is always 0 on HTTP/3,
+// where sending a datagram waits for the QUIC connection instead.
+func (c *Conn) DroppedDatagrams() uint64 {
+	if s, ok := c.str.(*http2Stream); ok {
+		return s.dropped.Load()
+	}
+	return 0
 }
 
 // Write queues capsules. Conn writes one complete capsule per call, so that DATAGRAM

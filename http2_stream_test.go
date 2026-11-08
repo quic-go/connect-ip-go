@@ -233,6 +233,25 @@ func TestHTTP2StreamSendDatagramDoesNotWait(t *testing.T) {
 	}
 	require.NotZero(t, capsules)
 	require.Less(t, capsules, sent)
+	// Every datagram was either sent or counted.
+	require.EqualValues(t, sent-capsules, s.dropped.Load())
+}
+
+func TestHTTP2ConnCountsDroppedDatagrams(t *testing.T) {
+	require.Zero(t, newProxiedConn(&mockStream{}, nil).DroppedDatagrams())
+
+	body := newFakeHTTP2Body(nil)
+	body.gate = make(chan struct{})
+	s := newHTTP2Stream(body)
+	conn := newProxiedConn(s, nil)
+	fillHTTP2Stream(t, s)
+	dropped := conn.DroppedDatagrams()
+	require.NoError(t, s.SendDatagram(nil))
+	require.Equal(t, dropped+1, conn.DroppedDatagrams())
+
+	close(body.gate)
+	require.NoError(t, conn.Close())
+	require.Equal(t, dropped+1, conn.DroppedDatagrams())
 }
 
 func TestHTTP2StreamTooLargeDatagram(t *testing.T) {
