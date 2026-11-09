@@ -310,13 +310,17 @@ func TestHTTP2Saturated(t *testing.T) {
 		return nil
 	}
 	// receive returns once the connection is closed, and fails on a torn or reordered packet.
+	var closing atomic.Bool
 	receive := func(conn *Conn, received *atomic.Int64) error {
 		buf := make([]byte, 1500)
 		next := uint64(0)
 		for {
 			n, err := conn.ReadPacket(buf)
 			if err != nil {
-				return nil
+				if closing.Load() {
+					return nil
+				}
+				return fmt.Errorf("reading: %w", err)
 			}
 			payload := buf[ipv4.HeaderLen:n]
 			if len(payload) != payloadLen {
@@ -380,6 +384,7 @@ func TestHTTP2Saturated(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return fromClient.Load() > 0 && fromProxy.Load() > 0
 	}, 5*time.Second, time.Millisecond)
+	closing.Store(true)
 	require.NoError(t, client.Close())
 	receivers.Wait()
 }

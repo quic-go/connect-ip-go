@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/net/http/httpguts"
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/hpack"
 )
@@ -72,8 +73,10 @@ type HTTP2ClientConn struct {
 	control         []func(*http2.Framer) error // frames owed to the proxy, written ahead of DATA frames
 	sawSettings     bool
 	extendedConnect bool
-	dialed          bool
+	dialing         bool // Dial was called
+	dialed          bool // the request was sent
 	responded       bool
+	writing         bool // a DATA frame is being written, and may be blocked in the network
 	pingID          uint64
 	pings           map[[8]byte]chan struct{}
 	connSend        int64 // connection-level send window
@@ -85,8 +88,9 @@ type HTTP2ClientConn struct {
 	recv            bytes.Buffer
 	recvEnded       bool  // the proxy ended the stream
 	recvClosed      bool  // the local side stopped reading
-	recvUsed        int64 // bytes the proxy sent and that weren't credited yet
-	recvConsumed    int64 // the part of recvUsed that can be credited
+	recvUsed        int64 // bytes the proxy sent, until the writer takes their credit
+	recvCredit      int64 // the part of recvUsed that was consumed, and can be credited
+	creditQueued    bool  // a WINDOW_UPDATE for recvCredit waits in control
 }
 
 // NewHTTP2ClientConn starts an HTTP/2 connection on conn, a TLS connection that negotiated
@@ -152,6 +156,13 @@ func (c *HTTP2ClientConn) Dial(req *Request) (*Conn, *http.Response, error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	c.mu.Lock()
+	if c.dialing {
+		c.mu.Unlock()
+		return nil, nil, errors.New("connect-ip: HTTP2ClientConn already used")
+	}
+	c.dialing = true
+	c.mu.Unlock()
 
 	ctx := httpReq.Context()
 	select {
@@ -170,10 +181,6 @@ func (c *HTTP2ClientConn) Dial(req *Request) (*Conn, *http.Response, error) {
 	if !c.extendedConnect {
 		c.mu.Unlock()
 		return nil, nil, errors.New("connect-ip: server didn't enable Extended CONNECT")
-	}
-	if c.dialed {
-		c.mu.Unlock()
-		return nil, nil, errors.New("connect-ip: HTTP2ClientConn already used")
 	}
 	c.dialed = true
 	c.queueControlFrame(func(fr *http2.Framer) error {
@@ -214,8 +221,21 @@ func encodeHTTP2Request(req *http.Request) ([]byte, error) {
 	write(":authority", host)
 	write(":path", req.URL.RequestURI())
 	for name, values := range req.Header {
+		if !httpguts.ValidHeaderFieldName(name) {
+			return nil, fmt.Errorf("connect-ip: invalid header field name %q", name)
+		}
+		name = strings.ToLower(name)
+		// RFC 9113, section 8.2.2: HTTP/2 has no connection-specific header fields.
+		// net/http drops them, and a server rejects a request that carries them.
+		switch name {
+		case "connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade":
+			continue
+		}
 		for _, value := range values {
-			write(strings.ToLower(name), value)
+			if !httpguts.ValidHeaderFieldValue(value) {
+				return nil, fmt.Errorf("connect-ip: invalid value for header field %q", name)
+			}
+			write(name, value)
 		}
 	}
 	if block.Len() > http2InitialMaxFrameSize {
@@ -250,6 +270,11 @@ func (c *HTTP2ClientConn) Ping(ctx context.Context) error {
 
 	c.mu.Lock()
 	if err := c.err; err != nil {
+		c.mu.Unlock()
+		return err
+	}
+	// A Ping that times out leaves its frame behind: don't let them pile up on a writer that stalled.
+	if err := c.checkControlQueue(); err != nil {
 		c.mu.Unlock()
 		return err
 	}
@@ -441,16 +466,25 @@ func (c *HTTP2ClientConn) handleHeaders(f *http2.MetaHeadersFrame) error {
 	if f.Truncated {
 		return errors.New("connect-ip: response headers too large")
 	}
+	if c.recvEnded {
+		return http2.ConnectionError(http2.ErrCodeStreamClosed)
+	}
+	if c.responded {
+		// Trailers, which end the stream and carry no pseudo-header: RFC 9113, section 8.1.
+		if !f.StreamEnded() || len(f.PseudoFields()) > 0 {
+			return http2.ConnectionError(http2.ErrCodeProtocol)
+		}
+		c.recvEnded = true
+		c.cond.Broadcast()
+		return nil
+	}
 	if f.StreamEnded() {
 		c.recvEnded = true
 		c.cond.Broadcast()
 	}
-	if c.responded { // trailers
-		return nil
-	}
-	status, err := strconv.Atoi(f.PseudoValue("status"))
+	status, err := parseHTTP2Status(f.PseudoValue("status"))
 	if err != nil {
-		return fmt.Errorf("connect-ip: invalid status from the proxy: %w", err)
+		return err
 	}
 	if status >= 100 && status <= 199 {
 		return nil
@@ -471,9 +505,20 @@ func (c *HTTP2ClientConn) handleHeaders(f *http2.MetaHeadersFrame) error {
 	return nil
 }
 
+// parseHTTP2Status parses a :status pseudo-header, which RFC 9113, section 8.3.2 makes a 3-digit code.
+func parseHTTP2Status(s string) (int, error) {
+	if len(s) != 3 || strings.Trim(s, "0123456789") != "" {
+		return 0, fmt.Errorf("connect-ip: invalid status from the proxy: %q", s)
+	}
+	return strconv.Atoi(s)
+}
+
 func (c *HTTP2ClientConn) handleData(f *http2.DataFrame) error {
 	if f.StreamID != http2StreamID || !c.responded {
 		return fmt.Errorf("connect-ip: unexpected DATA from the proxy on stream %d", f.StreamID)
+	}
+	if c.recvEnded {
+		return http2.ConnectionError(http2.ErrCodeStreamClosed)
 	}
 	// Flow control covers the whole frame, padding included.
 	size := int64(f.Length)
@@ -496,27 +541,40 @@ func (c *HTTP2ClientConn) handleData(f *http2.DataFrame) error {
 }
 
 // consume returns n bytes of flow control credit to the proxy.
-// It batches them, so that a stream of small frames doesn't cause as many WINDOW_UPDATE frames.
+// It batches them, so that a stream of small frames doesn't cause as many WINDOW_UPDATE frames,
+// and queues a single WINDOW_UPDATE at a time, which takes the credit accrued while it waited.
+// The window only widens when the writer takes the credit: a proxy that sends more than
+// it was credited exceeds the window, and can't make the control queue grow.
 func (c *HTTP2ClientConn) consume(n int64) {
-	c.recvConsumed += n
-	if c.recvConsumed < c.window/2 {
+	c.recvCredit += n
+	if c.creditQueued || c.recvCredit < c.window/2 {
 		return
 	}
-	credit := uint32(c.recvConsumed)
-	c.recvUsed -= c.recvConsumed
-	c.recvConsumed = 0
-	c.queueControlFrame(func(fr *http2.Framer) error {
-		if err := fr.WriteWindowUpdate(0, credit); err != nil {
-			return err
-		}
-		return fr.WriteWindowUpdate(http2StreamID, credit)
-	})
+	c.creditQueued = true
+	c.queueControlFrame(c.writeWindowUpdate)
+}
+
+// writeWindowUpdate credits the proxy with what was consumed, on both the connection and the stream.
+func (c *HTTP2ClientConn) writeWindowUpdate(fr *http2.Framer) error {
+	c.mu.Lock()
+	credit := uint32(c.recvCredit)
+	c.recvUsed -= c.recvCredit
+	c.recvCredit = 0
+	c.creditQueued = false
+	c.mu.Unlock()
+	if err := fr.WriteWindowUpdate(0, credit); err != nil {
+		return err
+	}
+	return fr.WriteWindowUpdate(http2StreamID, credit)
 }
 
 func (c *HTTP2ClientConn) handleWindowUpdate(f *http2.WindowUpdateFrame) error {
 	window := &c.streamSend
 	if f.StreamID == 0 {
 		window = &c.connSend
+	} else if f.StreamID != http2StreamID || !c.dialed {
+		// RFC 9113, section 5.1: a frame on an idle stream is a connection error.
+		return http2.ConnectionError(http2.ErrCodeProtocol)
 	}
 	*window += int64(f.Increment)
 	if *window > http2MaxWindow {
@@ -543,6 +601,9 @@ func (c *HTTP2ClientConn) handlePing(f *http2.PingFrame) error {
 }
 
 func (c *HTTP2ClientConn) handleReset(f *http2.RSTStreamFrame) error {
+	if f.StreamID != http2StreamID || !c.dialed {
+		return http2.ConnectionError(http2.ErrCodeProtocol)
+	}
 	// A server that finished its response can tell the client not to bother
 	// sending the rest of the request. This isn't an error: RFC 9113, section 8.1.
 	if !c.recvEnded || f.ErrCode != http2.ErrCodeNo {
@@ -561,6 +622,12 @@ func (c *HTTP2ClientConn) reset(code http2.ErrCode) {
 	}
 	c.resetSent = true
 	c.sendClosed = true
+	if c.writing {
+		// The RST_STREAM would wait behind a DATA frame that the network doesn't
+		// take: a proxy that stopped reading. Interrupting that write breaks the
+		// framing, so it ends the connection, which this stream was the only use of.
+		_ = c.nc.SetWriteDeadline(time.Now())
+	}
 	c.queueControlFrame(func(fr *http2.Framer) error { return fr.WriteRSTStream(http2StreamID, code) })
 }
 
@@ -619,13 +686,39 @@ func (b *clientBody) Write(p []byte) (int, error) {
 		if err != nil {
 			return written, err
 		}
-		frame := p[written : written+n]
-		if err := c.writeFrame(func(fr *http2.Framer) error { return fr.WriteData(http2StreamID, false, frame) }); err != nil {
+		if err := c.writeData(p[written : written+n]); err != nil {
 			return written, c.failWrite(err)
 		}
 		written += n
 	}
 	return written, nil
+}
+
+// writeData sends frame, which flow control already allowed, in DATA frames.
+func (c *HTTP2ClientConn) writeData(frame []byte) error {
+	c.mu.Lock()
+	c.writing = true
+	c.mu.Unlock()
+	defer func() {
+		c.mu.Lock()
+		c.writing = false
+		c.mu.Unlock()
+	}()
+	return c.writeFrame(func(fr *http2.Framer) error {
+		// The proxy may have lowered SETTINGS_MAX_FRAME_SIZE since the reservation, and its
+		// SETTINGS ACK gone out first. Both writes hold wmu, so the limit read here is the
+		// one the proxy knows acknowledged.
+		for len(frame) > 0 {
+			c.mu.Lock()
+			n := min(len(frame), int(c.maxFrame))
+			c.mu.Unlock()
+			if err := fr.WriteData(http2StreamID, false, frame[:n]); err != nil {
+				return err
+			}
+			frame = frame[n:]
+		}
+		return nil
+	})
 }
 
 func (b *clientBody) CloseWrite() error {

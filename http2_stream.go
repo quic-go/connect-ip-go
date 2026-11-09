@@ -236,6 +236,9 @@ func (s *http2Stream) flush() {
 			s.pending = nil
 			s.cond.Broadcast()
 			s.mu.Unlock()
+			// A stream that can't carry capsules one way is of no use the other way:
+			// failing Read gets Conn to shut down, instead of waiting for the peer.
+			s.body.CloseRead()
 			return
 		}
 	}
@@ -263,7 +266,13 @@ func (s *http2Stream) Close() error {
 	defer timer.Stop()
 	select {
 	case <-s.flushed:
-		return s.body.CloseWrite()
+		err := s.body.CloseWrite()
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.err != nil { // the capsules were lost, which closing has to report
+			return s.err
+		}
+		return err
 	case <-timer.C:
 		s.body.Reset(http2.ErrCodeCancel)
 		return fmt.Errorf("connect-ip: closing the stream: %w", os.ErrDeadlineExceeded)
@@ -303,7 +312,11 @@ func proxyHTTP2(w http.ResponseWriter, body io.ReadCloser) (*Conn, error) {
 	rc := http.NewResponseController(w)
 	// A proxied connection outlives the timeouts that a server applies to requests.
 	_ = rc.SetReadDeadline(time.Time{})
-	_ = rc.SetWriteDeadline(time.Time{})
+	// Resetting the stream goes through the write deadline too: without it, closing
+	// a Conn whose writes the peer doesn't accept would never finish.
+	if err := rc.SetWriteDeadline(time.Time{}); err != nil {
+		return nil, fmt.Errorf("connect-ip: the ResponseWriter doesn't support write deadlines: %w", err)
+	}
 
 	w.WriteHeader(http.StatusOK)
 	if err := rc.Flush(); err != nil {

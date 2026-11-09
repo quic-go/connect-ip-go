@@ -33,20 +33,26 @@ type fakeHTTP2Body struct {
 	writeErr   error
 	closeWrite bool
 	closeRead  bool
+	readClosed chan struct{} // closed by CloseRead
 	reset      []http2.ErrCode
 	reseted    chan struct{}
 }
 
 func newFakeHTTP2Body(r io.Reader) *fakeHTTP2Body {
+	b := &fakeHTTP2Body{Reader: r, reseted: make(chan struct{}), readClosed: make(chan struct{})}
 	if r == nil {
-		r = blockingReader{}
+		b.Reader = blockingReader{closed: b.readClosed}
 	}
-	return &fakeHTTP2Body{Reader: r, reseted: make(chan struct{})}
+	return b
 }
 
-type blockingReader struct{}
+// blockingReader blocks until the read side is closed, like a stream the peer keeps quiet on.
+type blockingReader struct{ closed <-chan struct{} }
 
-func (blockingReader) Read([]byte) (int, error) { select {} }
+func (r blockingReader) Read([]byte) (int, error) {
+	<-r.closed
+	return 0, net.ErrClosed
+}
 
 func (b *fakeHTTP2Body) Write(p []byte) (int, error) {
 	if b.gate != nil {
@@ -75,7 +81,10 @@ func (b *fakeHTTP2Body) CloseWrite() error {
 func (b *fakeHTTP2Body) CloseRead() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.closeRead = true
+	if !b.closeRead {
+		b.closeRead = true
+		close(b.readClosed)
+	}
 }
 
 func (b *fakeHTTP2Body) Reset(code http2.ErrCode) {
@@ -362,8 +371,19 @@ func TestHTTP2StreamCancelRead(t *testing.T) {
 	body := newFakeHTTP2Body(nil)
 	s := newHTTP2Stream(body)
 	defer s.CancelWrite(0)
+	read := make(chan error, 1)
+	go func() {
+		_, err := io.ReadAll(s)
+		read <- err
+	}()
 	s.CancelRead(0)
 	require.True(t, body.closeRead)
+	select {
+	case err := <-read:
+		require.ErrorIs(t, err, net.ErrClosed)
+	case <-time.After(time.Second):
+		t.Fatal("Read didn't return")
+	}
 }
 
 func TestHTTP2StreamWriteFailure(t *testing.T) {
@@ -376,6 +396,10 @@ func TestHTTP2StreamWriteFailure(t *testing.T) {
 	require.ErrorIs(t, s.SendDatagram(nil), writeErr)
 	_, err := s.Write([]byte("capsule"))
 	require.ErrorIs(t, err, writeErr)
+	// The read side is closed too, for Conn to notice, and closing reports the loss.
+	require.True(t, body.closeRead)
+	require.ErrorIs(t, s.Close(), writeErr)
+	require.True(t, body.closeWrite)
 }
 
 func TestHTTP2ConnOverStream(t *testing.T) {
@@ -390,11 +414,25 @@ func TestHTTP2ConnOverStream(t *testing.T) {
 	require.True(t, body.closeRead)
 }
 
+// responseWriterWithoutFlush can set deadlines, like the ResponseWriter of net/http, but not flush.
 type responseWriterWithoutFlush struct{ http.ResponseWriter }
+
+func (responseWriterWithoutFlush) SetWriteDeadline(time.Time) error { return nil }
 
 func TestProxyHTTP2CannotFlush(t *testing.T) {
 	_, err := proxyHTTP2(responseWriterWithoutFlush{httptest.NewRecorder()}, http.NoBody)
 	require.ErrorContains(t, err, "failed to send response")
+}
+
+// responseWriterWithoutDeadline is a middleware that hides the ResponseWriter of net/http: no Unwrap.
+type responseWriterWithoutDeadline struct{ http.ResponseWriter }
+
+func (responseWriterWithoutDeadline) Flush() {}
+
+func TestProxyHTTP2CannotSetWriteDeadline(t *testing.T) {
+	_, err := proxyHTTP2(responseWriterWithoutDeadline{httptest.NewRecorder()}, http.NoBody)
+	require.ErrorIs(t, err, http.ErrNotSupported)
+	require.ErrorContains(t, err, "write deadlines")
 }
 
 func TestProxyBodyStopsAfterClose(t *testing.T) {
