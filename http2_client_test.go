@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -174,6 +175,8 @@ func TestHTTP2ClientRequest(t *testing.T) {
 	// Connection-specific header fields don't exist in HTTP/2: RFC 9113, section 8.2.2.
 	req.Header().Set("Connection", "keep-alive")
 	req.Header().Set("Keep-Alive", "timeout=5")
+	// Except TE, which can only say "trailers".
+	req.Header().Set("Te", "gzip, trailers")
 	go c.Dial(req)
 	p.handshake(extendedConnectSetting)
 
@@ -190,7 +193,20 @@ func TestHTTP2ClientRequest(t *testing.T) {
 	require.ElementsMatch(t, []hpack.HeaderField{
 		{Name: "capsule-protocol", Value: capsuleProtocolHeaderValue},
 		{Name: "authorization", Value: "Bearer token"},
+		{Name: "te", Value: "trailers"},
 	}, headers.RegularFields())
+}
+
+func TestHTTP2ClientDropsTEWithoutTrailers(t *testing.T) {
+	req := newHTTP2TestRequest(t, t.Context())
+	req.Header().Set("Te", "gzip")
+	block, err := encodeHTTP2Request(req.httpRequest())
+	require.NoError(t, err)
+	fields, err := hpack.NewDecoder(http2InitialTableSize, nil).DecodeFull(block)
+	require.NoError(t, err)
+	for _, field := range fields {
+		require.NotEqual(t, "te", field.Name)
+	}
 }
 
 func TestHTTP2ClientSettings(t *testing.T) {
@@ -330,6 +346,32 @@ func TestHTTP2ClientRefusedThenClosed(t *testing.T) {
 		rsp, err := c.waitForResponse(req.httpRequest().Context())
 		require.NoError(t, err)
 		require.Equal(t, http.StatusForbidden, rsp.StatusCode)
+	}
+}
+
+func TestHTTP2ClientNoStreamsAllowed(t *testing.T) {
+	p, c := newFakeHTTP2Proxy(t, nil)
+	result := dialAsync(t, t.Context(), c)
+	p.handshake(extendedConnectSetting, http2.Setting{ID: http2.SettingMaxConcurrentStreams, Val: 0})
+	nextFrame[*http2.SettingsFrame](p) // the ACK
+	r := <-result
+	require.ErrorContains(t, r.err, "server accepts no streams")
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	require.False(t, c.dialed, "the request wasn't sent")
+}
+
+func TestHTTP2ClientInterimResponseEndingStream(t *testing.T) {
+	p, c := newFakeHTTP2Proxy(t, nil)
+	result := dialAsync(t, t.Context(), c)
+	p.handshake(extendedConnectSetting)
+	nextFrame[*http2.MetaHeadersFrame](p)
+	p.writeResponse("103", true)
+	select {
+	case r := <-result:
+		require.ErrorIs(t, r.err, http2.ConnectionError(http2.ErrCodeProtocol))
+	case <-time.After(fakeHTTP2Timeout):
+		t.Fatal("Dial didn't return")
 	}
 }
 
@@ -596,11 +638,64 @@ func TestHTTP2ClientRespectsLoweredMaxFrameSize(t *testing.T) {
 	require.NoError(t, p.fr.WriteSettings(http2.Setting{ID: http2.SettingMaxFrameSize, Val: http2InitialMaxFrameSize}))
 	require.True(t, nextFrame[*http2.SettingsFrame](p).IsAck())
 	done := make(chan error, 1)
-	go func() { done <- c.writeData(make([]byte, n)) }()
+	go func() {
+		sent, err := c.writeData(make([]byte, n))
+		if err == nil && sent != n {
+			err = fmt.Errorf("sent %d bytes of %d", sent, n)
+		}
+		done <- err
+	}()
 	for range 2 {
 		require.Len(t, nextFrame[*http2.DataFrame](p).Data(), http2InitialMaxFrameSize)
 	}
 	require.NoError(t, <-done)
+}
+
+func TestHTTP2ClientRespectsLoweredWindow(t *testing.T) {
+	p, c := newFakeHTTP2Proxy(t, nil)
+	p.establish(c)
+	n, err := c.reserve(http2InitialMaxFrameSize)
+	require.NoError(t, err)
+	require.Equal(t, http2InitialMaxFrameSize, n)
+
+	// The proxy lowers the stream window after the reservation, and the acknowledgment
+	// goes out before the DATA: the proxy only allows what's left of the new window.
+	const lowered = 5000
+	require.NoError(t, p.fr.WriteSettings(http2.Setting{ID: http2.SettingInitialWindowSize, Val: lowered}))
+	require.True(t, nextFrame[*http2.SettingsFrame](p).IsAck())
+	type result struct {
+		sent int
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		sent, err := c.writeData(make([]byte, n))
+		done <- result{sent, err}
+	}()
+	require.Len(t, nextFrame[*http2.DataFrame](p).Data(), lowered)
+	r := <-done
+	require.NoError(t, r.err)
+	require.Equal(t, lowered, r.sent)
+
+	// The rest of the reservation went back to the connection window.
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	require.Zero(t, c.streamSend)
+	require.EqualValues(t, http2InitialWindow-lowered, c.connSend)
+}
+
+func TestHTTP2ClientNoDataAfterReset(t *testing.T) {
+	p, c := newFakeHTTP2Proxy(t, nil)
+	p.establish(c)
+	n, err := c.reserve(10)
+	require.NoError(t, err)
+	// A reset between the reservation and the write: the write mustn't start, since
+	// the reset couldn't interrupt it.
+	c.reset(http2.ErrCodeCancel)
+	sent, err := c.writeData(make([]byte, n))
+	require.ErrorIs(t, err, net.ErrClosed)
+	require.Zero(t, sent)
+	require.NoError(t, c.failure())
 }
 
 func TestHTTP2ClientResetInterruptsBlockedWrite(t *testing.T) {

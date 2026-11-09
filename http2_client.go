@@ -73,6 +73,7 @@ type HTTP2ClientConn struct {
 	control         []func(*http2.Framer) error // frames owed to the proxy, written ahead of DATA frames
 	sawSettings     bool
 	extendedConnect bool
+	noStreams       bool // the proxy's SETTINGS_MAX_CONCURRENT_STREAMS is 0
 	dialing         bool // Dial was called
 	dialed          bool // the request was sent
 	responded       bool
@@ -182,6 +183,12 @@ func (c *HTTP2ClientConn) Dial(req *Request) (*Conn, *http.Response, error) {
 		c.mu.Unlock()
 		return nil, nil, errors.New("connect-ip: server didn't enable Extended CONNECT")
 	}
+	if c.noStreams {
+		// Opening the stream would break the limit. The proxy may raise it later, but this
+		// connection only carries one stream: better to dial another one than to wait.
+		c.mu.Unlock()
+		return nil, nil, errors.New("connect-ip: server accepts no streams (SETTINGS_MAX_CONCURRENT_STREAMS is 0)")
+	}
 	c.dialed = true
 	c.queueControlFrame(func(fr *http2.Framer) error {
 		return fr.WriteHeaders(http2.HeadersFrameParam{
@@ -229,6 +236,12 @@ func encodeHTTP2Request(req *http.Request) ([]byte, error) {
 		// net/http drops them, and a server rejects a request that carries them.
 		switch name {
 		case "connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade":
+			continue
+		case "te":
+			// The exception, which can only say "trailers".
+			if httpguts.HeaderValuesContainsToken(values, "trailers") {
+				write(name, "trailers")
+			}
 			continue
 		}
 		for _, value := range values {
@@ -442,6 +455,8 @@ func (c *HTTP2ClientConn) handleSettings(f *http2.SettingsFrame) error {
 			c.maxFrame = int64(s.Val)
 		case http2.SettingEnableConnectProtocol:
 			c.extendedConnect = s.Val == 1
+		case http2.SettingMaxConcurrentStreams:
+			c.noStreams = s.Val == 0
 		}
 		return nil
 	})
@@ -478,16 +493,21 @@ func (c *HTTP2ClientConn) handleHeaders(f *http2.MetaHeadersFrame) error {
 		c.cond.Broadcast()
 		return nil
 	}
-	if f.StreamEnded() {
-		c.recvEnded = true
-		c.cond.Broadcast()
-	}
 	status, err := parseHTTP2Status(f.PseudoValue("status"))
 	if err != nil {
 		return err
 	}
 	if status >= 100 && status <= 199 {
+		// An interim response that ends the stream is malformed: RFC 9113, section 8.1.
+		// Dial would otherwise wait for a final response that can't come.
+		if f.StreamEnded() {
+			return http2.ConnectionError(http2.ErrCodeProtocol)
+		}
 		return nil
+	}
+	if f.StreamEnded() {
+		c.recvEnded = true
+		c.cond.Broadcast()
 	}
 	header := make(http.Header)
 	for _, field := range f.RegularFields() {
@@ -686,17 +706,27 @@ func (b *clientBody) Write(p []byte) (int, error) {
 		if err != nil {
 			return written, err
 		}
-		if err := c.writeData(p[written : written+n]); err != nil {
-			return written, c.failWrite(err)
+		sent, err := c.writeData(p[written : written+n])
+		written += sent
+		if err != nil {
+			return written, err
 		}
-		written += n
 	}
 	return written, nil
 }
 
-// writeData sends frame, which flow control already allowed, in DATA frames.
-func (c *HTTP2ClientConn) writeData(frame []byte) error {
+// writeData sends frame, which flow control allowed, in DATA frames, and returns how much it sent.
+func (c *HTTP2ClientConn) writeData(frame []byte) (int, error) {
+	// Under the same lock as reset, which interrupts a DATA write only if it sees it.
 	c.mu.Lock()
+	if err := c.err; err != nil {
+		c.mu.Unlock()
+		return 0, err
+	}
+	if c.sendClosed {
+		c.mu.Unlock()
+		return 0, net.ErrClosed
+	}
 	c.writing = true
 	c.mu.Unlock()
 	defer func() {
@@ -704,10 +734,21 @@ func (c *HTTP2ClientConn) writeData(frame []byte) error {
 		c.writing = false
 		c.mu.Unlock()
 	}()
-	return c.writeFrame(func(fr *http2.Framer) error {
-		// The proxy may have lowered SETTINGS_MAX_FRAME_SIZE since the reservation, and its
-		// SETTINGS ACK gone out first. Both writes hold wmu, so the limit read here is the
-		// one the proxy knows acknowledged.
+
+	var sent int
+	err := c.writeFrame(func(fr *http2.Framer) error {
+		// The proxy may have changed its settings since the reservation, and the SETTINGS ACK
+		// gone out first: then the proxy applies them to these frames. Both writes hold wmu,
+		// so the settings read here include all the acknowledged ones.
+		c.mu.Lock()
+		if c.streamSend < 0 {
+			// A lower SETTINGS_INITIAL_WINDOW_SIZE took back part of the reservation.
+			excess := min(int64(len(frame)), -c.streamSend)
+			c.streamSend += excess
+			c.connSend += excess
+			frame = frame[:int64(len(frame))-excess]
+		}
+		c.mu.Unlock()
 		for len(frame) > 0 {
 			c.mu.Lock()
 			n := min(len(frame), int(c.maxFrame))
@@ -716,9 +757,14 @@ func (c *HTTP2ClientConn) writeData(frame []byte) error {
 				return err
 			}
 			frame = frame[n:]
+			sent += n
 		}
 		return nil
 	})
+	if err != nil {
+		return sent, c.failWrite(err)
+	}
+	return sent, nil
 }
 
 func (b *clientBody) CloseWrite() error {
