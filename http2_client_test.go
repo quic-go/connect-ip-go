@@ -330,6 +330,26 @@ func TestHTTP2ClientRefused(t *testing.T) {
 	require.Equal(t, http2.ErrCodeCancel, rst.ErrCode)
 }
 
+func TestHTTP2ClientStatusWithoutCapsules(t *testing.T) {
+	// RFC 9297, section 3.2: a response that uses the Capsule Protocol can't have these statuses.
+	for _, status := range []string{"204", "205", "206"} {
+		t.Run(status, func(t *testing.T) {
+			p, c := newFakeHTTP2Proxy(t, nil)
+			result := dialAsync(t, t.Context(), c)
+			p.handshake(extendedConnectSetting)
+			nextFrame[*http2.MetaHeadersFrame](p)
+			p.writeResponse(status, false)
+			r := <-result
+			require.ErrorContains(t, r.err, "server responded with "+status+", which can't carry capsules")
+			require.Nil(t, r.conn)
+			require.Equal(t, status, fmt.Sprint(r.rsp.StatusCode))
+
+			rst := nextFrame[*http2.RSTStreamFrame](p)
+			require.Equal(t, http2.ErrCodeProtocol, rst.ErrCode)
+		})
+	}
+}
+
 func TestHTTP2ClientRefusedThenClosed(t *testing.T) {
 	// The refusal must not get lost in the failure of the connection that follows it.
 	for range 20 {

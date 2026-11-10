@@ -204,6 +204,12 @@ func (c *HTTP2ClientConn) Dial(req *Request) (*Conn, *http.Response, error) {
 		return nil, nil, err
 	}
 	rsp.Request = httpReq
+	switch rsp.StatusCode {
+	case http.StatusNoContent, http.StatusResetContent, http.StatusPartialContent:
+		// RFC 9297, section 3.2: these responses can't use the Capsule Protocol, so this one is malformed.
+		c.reset(http2.ErrCodeProtocol)
+		return nil, rsp, fmt.Errorf("connect-ip: server responded with %d, which can't carry capsules", rsp.StatusCode)
+	}
 	if rsp.StatusCode < 200 || rsp.StatusCode > 299 {
 		c.reset(http2.ErrCodeCancel)
 		return nil, rsp, fmt.Errorf("connect-ip: server responded with %d", rsp.StatusCode)
