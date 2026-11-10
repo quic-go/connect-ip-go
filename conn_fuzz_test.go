@@ -10,11 +10,26 @@ import (
 	"time"
 
 	"golang.org/x/net/ipv4"
+	"golang.org/x/net/ipv6"
 
 	ossfuzzseeds "github.com/quic-go/go-ossfuzz-seeds"
+	"github.com/quic-go/quic-go/quicvarint"
 
 	"github.com/stretchr/testify/require"
 )
+
+// fixLengthsAndChecksum sets the length fields and the IPv4 header checksum to match the packet.
+func fixLengthsAndChecksum(b []byte) {
+	switch {
+	case len(b) >= ipv4.HeaderLen && ipVersion(b) == 4:
+		binary.BigEndian.PutUint16(b[2:4], uint16(len(b)))
+		if hdrLen := int(b[0]&0x0f) * 4; hdrLen <= len(b) {
+			binary.BigEndian.PutUint16(b[10:12], calculateIPv4Checksum(b[:hdrLen]))
+		}
+	case len(b) >= ipv6.HeaderLen && ipVersion(b) == 6:
+		binary.BigEndian.PutUint16(b[4:6], uint16(len(b)-ipv6.HeaderLen))
+	}
+}
 
 func FuzzIncomingDatagram(f *testing.F) {
 	peerAddresses := []netip.Prefix{ // addresses we assign to the peer
@@ -48,8 +63,7 @@ func FuzzIncomingDatagram(f *testing.F) {
 		require.NoError(f, err)
 		b := append(hdr, make([]byte, 8)...) // payload
 		// on some platforms (e.g. macOS), Marshal uses the host byte order for the Total Length
-		binary.BigEndian.PutUint16(b[2:4], uint16(len(b)))
-		binary.BigEndian.PutUint16(b[10:12], calculateIPv4Checksum(b[:len(hdr)]))
+		fixLengthsAndChecksum(b)
 		return b
 	}
 	ipv6Packet := func(src, dst string, nextHeaders ...uint8) []byte {
@@ -76,11 +90,11 @@ func FuzzIncomingDatagram(f *testing.F) {
 		icmpTooLarge(ipv4Packet("198.51.100.1", "203.0.113.7", 17, nil)),
 		icmpTooLarge(ipv6Packet("2001:db8:b::1", "2001:db8:c::7", 6)),
 	} {
-		corpus.Add(true, true, true, true, append([]byte{0}, packet...)) // context ID 0
+		corpus.Add(true, true, true, true, true, append([]byte{0}, packet...)) // context ID 0
 	}
 
 	// Any of the address assignments and route advertisements might not have been sent (yet).
-	f.Fuzz(func(t *testing.T, hasPeerAddresses, hasAssignedAddresses, hasLocalRoutes, hasPeerRoutes bool, data []byte) {
+	f.Fuzz(func(t *testing.T, hasPeerAddresses, hasAssignedAddresses, hasLocalRoutes, hasPeerRoutes, fixHeader bool, data []byte) {
 		// The peer assigns addresses and advertises routes to us by sending capsules.
 		var capsules []byte
 		if hasAssignedAddresses {
@@ -112,6 +126,14 @@ func FuzzIncomingDatagram(f *testing.F) {
 			require.NoError(t, conn.AdvertiseRoute(localRoutes))
 		}
 
+		// Without fixing the header, almost any mutation of an IPv4 header would invalidate the checksum,
+		// and the packet would be dropped before reaching the forwarding logic.
+		if fixHeader {
+			data = bytes.Clone(data) // the fuzzer's input must not be modified
+			if _, l, err := quicvarint.Parse(data); err == nil {
+				fixLengthsAndChecksum(data[l:])
+			}
+		}
 		orig := bytes.Clone(data)
 		datagrams <- data
 		b := make([]byte, len(data))
