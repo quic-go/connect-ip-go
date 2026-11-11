@@ -128,7 +128,9 @@ func TestCapsuleWriteQueueLimit(t *testing.T) {
 		}
 	}()
 	require.ErrorContains(t, conn.AssignAddresses(nil), "capsule queue full")
-	require.ErrorIs(t, conn.AssignAddresses(nil), net.ErrClosed)
+	err := conn.AssignAddresses(nil)
+	require.ErrorIs(t, err, net.ErrClosed)
+	require.ErrorContains(t, err, "capsule queue full")
 }
 
 func TestCapsuleReceiveQueueLimit(t *testing.T) {
@@ -151,6 +153,7 @@ func TestCapsuleReceiveQueueLimit(t *testing.T) {
 			defer cancel()
 			_, err := conn.Routes(ctx)
 			require.ErrorIs(t, err, net.ErrClosed)
+			require.ErrorContains(t, err, "queue full")
 		})
 	}
 }
@@ -809,6 +812,10 @@ func TestWritePacketAfterRemoteClose(t *testing.T) {
 
 	_, err := conn.Routes(context.Background())
 	require.ErrorIs(t, err, net.ErrClosed)
+	var closeErr *CloseError
+	require.ErrorAs(t, err, &closeErr)
+	require.True(t, closeErr.Remote)
+	require.NoError(t, closeErr.Unwrap())
 	// The mock stream always accepts datagrams,
 	// like an HTTP/3 stream does until its send side is closed.
 	_, err = conn.WritePacket(bytes.Clone(ipv6Header))

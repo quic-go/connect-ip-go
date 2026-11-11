@@ -289,6 +289,7 @@ func TestClosing(t *testing.T) {
 	var closeErr *CloseError
 	require.ErrorAs(t, err, &closeErr)
 	require.False(t, closeErr.Remote)
+	require.NoError(t, closeErr.Unwrap())
 	_, err = client.Routes(context.Background())
 	require.ErrorIs(t, err, net.ErrClosed)
 	require.ErrorIs(t,
@@ -324,4 +325,21 @@ func TestClosing(t *testing.T) {
 	require.ErrorIs(t, err, net.ErrClosed)
 	_, err = server.WritePacket(ipv6Packet)
 	require.ErrorIs(t, err, net.ErrClosed)
+}
+
+func TestClosingConnectionError(t *testing.T) {
+	client, server := setupConns(t)
+	// close the QUIC connection without closing the stream
+	require.NoError(t, client.closeConn())
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_, err := server.Routes(ctx)
+	require.ErrorIs(t, err, net.ErrClosed)
+	var closeErr *CloseError
+	require.ErrorAs(t, err, &closeErr)
+	require.True(t, closeErr.Remote)
+	var appErr *quic.ApplicationError
+	require.ErrorAs(t, err, &appErr)
+	require.True(t, appErr.Remote)
 }

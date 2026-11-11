@@ -22,10 +22,20 @@ import (
 
 type CloseError struct {
 	Remote bool
+	err    error
 }
 
-func (e *CloseError) Error() string        { return net.ErrClosed.Error() }
+func (e *CloseError) Error() string {
+	if e.err == nil {
+		return net.ErrClosed.Error()
+	}
+	return e.err.Error()
+}
+
 func (e *CloseError) Is(target error) bool { return target == net.ErrClosed }
+
+// Unwrap returns the error that ended the stream, or nil after a FIN or Close.
+func (e *CloseError) Unwrap() error { return e.err }
 
 type http3Stream interface {
 	io.ReadWriteCloser
@@ -111,12 +121,9 @@ func newProxiedConn(str http3Stream, closeConn func() error) *Conn {
 	}
 	go func() {
 		err := c.readFromStream()
-		if err != nil {
-			log.Printf("handling stream failed: %v", err)
-		}
 		c.mu.Lock()
 		if c.ctx.Err() == nil {
-			c.ctxCancel(&CloseError{Remote: true})
+			c.ctxCancel(&CloseError{Remote: true, err: err})
 			if err != nil {
 				// Abort without consuming the remaining capsule payload.
 				c.str.CancelRead(quic.StreamErrorCode(http3.ErrCodeExcessiveLoad))
@@ -136,10 +143,9 @@ func newProxiedConn(str http3Stream, closeConn func() error) *Conn {
 	go func() {
 		err := c.writeToStream()
 		if err != nil {
-			log.Printf("writing to stream failed: %v", err)
 			c.mu.Lock()
 			if c.ctx.Err() == nil {
-				c.ctxCancel(&CloseError{Remote: true})
+				c.ctxCancel(&CloseError{Remote: true, err: err})
 				c.str.CancelRead(quic.StreamErrorCode(http3.ErrCodeExcessiveLoad))
 				c.str.CancelWrite(quic.StreamErrorCode(http3.ErrCodeExcessiveLoad))
 			} else {
@@ -398,11 +404,12 @@ func (c *Conn) queueWrite(w streamWrite) error {
 		// Interrupt pending capsule writes so shutdown cannot stall.
 		_ = c.str.SetWriteDeadline(time.Now())
 	} else if len(c.queuedWrites) >= maxQueuedCapsules {
-		c.ctxCancel(&CloseError{Remote: false})
+		err := errors.New("connect-ip: capsule queue full")
+		c.ctxCancel(&CloseError{Remote: false, err: err})
 		c.str.CancelRead(quic.StreamErrorCode(http3.ErrCodeExcessiveLoad))
 		c.str.CancelWrite(quic.StreamErrorCode(http3.ErrCodeExcessiveLoad))
 		close(c.writeNotify)
-		return errors.New("connect-ip: capsule queue full")
+		return err
 	}
 
 	c.queuedWrites = append(c.queuedWrites, w)
