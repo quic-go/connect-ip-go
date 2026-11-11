@@ -34,8 +34,17 @@ func (e *CloseError) Error() string {
 
 func (e *CloseError) Is(target error) bool { return target == net.ErrClosed }
 
-// Unwrap returns the error that ended the stream, or nil after a FIN or Close.
+// Unwrap returns the error that ended the stream, or nil after a FIN, Close, or H3_NO_ERROR.
 func (e *CloseError) Unwrap() error { return e.err }
+
+// closeCause returns nil if the peer closed the stream or the connection with H3_NO_ERROR.
+func closeCause(err error) error {
+	h3Err, ok := errors.AsType[*http3.Error](err)
+	if !ok || !h3Err.Remote || h3Err.ErrorCode != http3.ErrCodeNoError {
+		return err
+	}
+	return nil
+}
 
 type http3Stream interface {
 	io.ReadWriteCloser
@@ -123,7 +132,7 @@ func newProxiedConn(str http3Stream, closeConn func() error) *Conn {
 		err := c.readFromStream()
 		c.mu.Lock()
 		if c.ctx.Err() == nil {
-			c.ctxCancel(&CloseError{Remote: true, err: err})
+			c.ctxCancel(&CloseError{Remote: true, err: closeCause(err)})
 			if err != nil {
 				// Abort without consuming the remaining capsule payload.
 				c.str.CancelRead(quic.StreamErrorCode(http3.ErrCodeExcessiveLoad))
@@ -145,7 +154,7 @@ func newProxiedConn(str http3Stream, closeConn func() error) *Conn {
 		if err != nil {
 			c.mu.Lock()
 			if c.ctx.Err() == nil {
-				c.ctxCancel(&CloseError{Remote: true, err: err})
+				c.ctxCancel(&CloseError{Remote: true, err: closeCause(err)})
 				c.str.CancelRead(quic.StreamErrorCode(http3.ErrCodeExcessiveLoad))
 				c.str.CancelWrite(quic.StreamErrorCode(http3.ErrCodeExcessiveLoad))
 			} else {
