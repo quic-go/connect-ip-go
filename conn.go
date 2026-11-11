@@ -40,10 +40,10 @@ func (e *CloseError) Unwrap() error { return e.err }
 // closeCause returns nil if the peer closed the stream or the connection with H3_NO_ERROR.
 func closeCause(err error) error {
 	h3Err, ok := errors.AsType[*http3.Error](err)
-	if !ok || !h3Err.Remote || h3Err.ErrorCode != http3.ErrCodeNoError {
-		return err
+	if ok && h3Err.Remote && h3Err.ErrorCode == http3.ErrCodeNoError {
+		return nil
 	}
-	return nil
+	return err
 }
 
 type http3Stream interface {
