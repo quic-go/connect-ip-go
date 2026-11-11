@@ -340,6 +340,11 @@ func TestClosingConnection(t *testing.T) {
 	require.ErrorAs(t, err, &closeErr)
 	require.True(t, closeErr.Remote)
 	require.NoError(t, closeErr.Unwrap())
+
+	_, err = client.Routes(ctx)
+	require.ErrorIs(t, err, net.ErrClosed)
+	require.ErrorAs(t, err, &closeErr)
+	require.NoError(t, closeErr.Unwrap())
 }
 
 func TestClosingStreamWithError(t *testing.T) {

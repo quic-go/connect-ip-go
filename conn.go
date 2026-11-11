@@ -37,10 +37,10 @@ func (e *CloseError) Is(target error) bool { return target == net.ErrClosed }
 // Unwrap returns the error that ended the stream, or nil after a FIN, Close, or H3_NO_ERROR.
 func (e *CloseError) Unwrap() error { return e.err }
 
-// closeCause returns nil if the peer closed the stream or the connection with H3_NO_ERROR.
+// closeCause returns nil if the stream or the connection was closed with H3_NO_ERROR.
 func closeCause(err error) error {
 	h3Err, ok := errors.AsType[*http3.Error](err)
-	if ok && h3Err.Remote && h3Err.ErrorCode == http3.ErrCodeNoError {
+	if ok && h3Err.ErrorCode == http3.ErrCodeNoError {
 		return nil
 	}
 	return err
