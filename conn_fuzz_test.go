@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"io"
 	"net"
 	"net/netip"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	"golang.org/x/net/ipv6"
 
 	ossfuzzseeds "github.com/quic-go/go-ossfuzz-seeds"
+	"github.com/quic-go/quic-go/qlogwriter"
 	"github.com/quic-go/quic-go/quicvarint"
 
 	"github.com/stretchr/testify/require"
@@ -106,7 +108,10 @@ func FuzzIncomingDatagram(f *testing.F) {
 		toRead := make(chan []byte)
 		defer close(toRead)
 		datagrams := make(chan []byte, 1)
-		conn := newProxiedConn(&mockStream{reading: capsules, toRead: toRead, datagrams: datagrams}, nil)
+		// enable qlog, so that fuzzing covers converting and encoding qlog events
+		trace := qlogwriter.NewFileSeq(nopWriteCloser{io.Discard})
+		go trace.Run()
+		conn := newProxiedConn(&mockStream{reading: capsules, toRead: toRead, datagrams: datagrams, qlogTrace: trace}, nil)
 		defer conn.Close()
 
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -144,3 +149,7 @@ func FuzzIncomingDatagram(f *testing.F) {
 		}
 	})
 }
+
+type nopWriteCloser struct{ io.Writer }
+
+func (nopWriteCloser) Close() error { return nil }
