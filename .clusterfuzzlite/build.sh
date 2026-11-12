@@ -61,4 +61,5 @@ build_native_go_fuzzer() {
 }
 
 build_native_go_fuzzer github.com/quic-go/connect-ip-go FuzzIncomingDatagram incoming_datagram_fuzzer
+build_native_go_fuzzer github.com/quic-go/connect-ip-go FuzzWritePacket write_packet_fuzzer
 build_native_go_fuzzer github.com/quic-go/connect-ip-go FuzzCapsules capsule_fuzzer
