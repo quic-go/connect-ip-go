@@ -63,12 +63,12 @@ func (t *Transport) Dial(req *Request) (*Conn, *http.Response, error) {
 	}
 	c, err := t.NewClientConn(conn)
 	if err != nil {
-		conn.CloseWithError(0, "")
+		conn.CloseWithError(quic.ApplicationErrorCode(http3.ErrCodeNoError), "")
 		return nil, nil, err
 	}
-	pconn, rsp, err := c.dial(req, func() error { return conn.CloseWithError(0, "") })
+	pconn, rsp, err := c.dial(req, func() error { return conn.CloseWithError(quic.ApplicationErrorCode(http3.ErrCodeNoError), "") })
 	if err != nil {
-		conn.CloseWithError(0, "")
+		conn.CloseWithError(quic.ApplicationErrorCode(http3.ErrCodeNoError), "")
 		return nil, rsp, err
 	}
 	return pconn, rsp, nil

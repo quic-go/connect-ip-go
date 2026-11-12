@@ -327,7 +327,7 @@ func TestClosing(t *testing.T) {
 	require.ErrorIs(t, err, net.ErrClosed)
 }
 
-func TestClosingConnectionError(t *testing.T) {
+func TestClosingConnection(t *testing.T) {
 	client, server := setupConns(t)
 	// close the QUIC connection without closing the stream
 	require.NoError(t, client.closeConn())
@@ -339,7 +339,27 @@ func TestClosingConnectionError(t *testing.T) {
 	var closeErr *CloseError
 	require.ErrorAs(t, err, &closeErr)
 	require.True(t, closeErr.Remote)
-	var appErr *quic.ApplicationError
-	require.ErrorAs(t, err, &appErr)
-	require.True(t, appErr.Remote)
+	require.NoError(t, closeErr.Unwrap())
+
+	_, err = client.Routes(ctx)
+	require.ErrorIs(t, err, net.ErrClosed)
+	require.ErrorAs(t, err, &closeErr)
+	require.NoError(t, closeErr.Unwrap())
+}
+
+func TestClosingStreamWithError(t *testing.T) {
+	client, server := setupConns(t)
+	client.str.CancelWrite(quic.StreamErrorCode(http3.ErrCodeInternalError))
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_, err := server.Routes(ctx)
+	require.ErrorIs(t, err, net.ErrClosed)
+	var closeErr *CloseError
+	require.ErrorAs(t, err, &closeErr)
+	require.True(t, closeErr.Remote)
+	var h3Err *http3.Error
+	require.ErrorAs(t, err, &h3Err)
+	require.True(t, h3Err.Remote)
+	require.Equal(t, http3.ErrCodeInternalError, h3Err.ErrorCode)
 }
