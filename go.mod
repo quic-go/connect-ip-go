@@ -5,7 +5,7 @@ go 1.26.0
 require (
 	github.com/dunglas/httpsfv v1.1.1
 	github.com/quic-go/go-ossfuzz-seeds v0.1.0
-	github.com/quic-go/quic-go v0.65.0
+	github.com/quic-go/quic-go v0.65.1-0.20261115175320-52aa3a93c6dd
 	github.com/stretchr/testify v1.12.1
 	github.com/yosida95/uritemplate/v3 v3.0.2
 	golang.org/x/net v0.56.0
