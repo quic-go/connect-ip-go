@@ -7,7 +7,7 @@ replace github.com/quic-go/connect-ip-go => ..
 require (
 	// This version is a placeholder; the replacement above always uses the current checkout.
 	github.com/quic-go/connect-ip-go v0.0.0
-	github.com/quic-go/quic-go v0.65.1-0.20261115175320-52aa3a93c6dd
+	github.com/quic-go/quic-go v0.66.0
 	github.com/songgao/water v0.0.0-20200317203138-2b4b6d7c09d8
 	github.com/stretchr/testify v1.12.1
 	github.com/vishvananda/netlink v1.3.0
